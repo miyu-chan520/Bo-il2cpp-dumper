@@ -151,19 +151,76 @@ void show_toast(const std::string &message) {
     }).detach();
 }
 
+void hide_self_from_maps() {
+    Dl_info info;
+    if (!dladdr((void*)hide_self_from_maps, &info) || !info.dli_fname) return;
+    std::string my_path = info.dli_fname;
+
+    FILE *fp = fopen("/proc/self/maps", "r");
+    if (!fp) return;
+
+    struct MapSeg {
+        uintptr_t start;
+        uintptr_t end;
+        int prot;
+    };
+    std::vector<MapSeg> segs;
+    char line[512];
+    while (fgets(line, sizeof(line), fp)) {
+        if (strstr(line, my_path.c_str()) || strstr(line, "zygisk_il2cppdumper")) {
+            uintptr_t start = 0, end = 0;
+            char perms[5] = {0};
+            if (sscanf(line, "%" SCNxPTR "-%" SCNxPTR " %4s", &start, &end, perms) >= 3) {
+                int prot = 0;
+                if (perms[0] == 'r') prot |= PROT_READ;
+                if (perms[1] == 'w') prot |= PROT_WRITE;
+                if (perms[2] == 'x') prot |= PROT_EXEC;
+                segs.push_back({start, end, prot});
+            }
+        }
+    }
+    fclose(fp);
+
+    for (const auto &seg : segs) {
+        size_t len = seg.end - seg.start;
+        void *backup = malloc(len);
+        if (!backup) continue;
+        memcpy(backup, (void*)seg.start, len);
+
+        // Replace file-backed mapping with anonymous memory
+        void *anon = mmap((void*)seg.start, len, PROT_READ | PROT_WRITE,
+                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+        if (anon != MAP_FAILED) {
+            memcpy((void*)seg.start, backup, len);
+            mprotect((void*)seg.start, len, seg.prot);
+        }
+        free(backup);
+    }
+}
+
 void hack_start(const char *game_data_dir) {
     pthread_setname_np(pthread_self(), "UnityGfxDevice");
     init_log(game_data_dir);
     write_log("[+] Zygisk-Il2CppDumper attached. Data dir: %s", game_data_dir);
     write_log("[+] Camouflaged worker thread as UnityGfxDevice (tid: %d)", gettid());
+
+    // Hide our module mappings from /proc/self/maps to bypass anti-cheat scanners
+    hide_self_from_maps();
+    write_log("[+] Self-hiding completed: module mappings converted to anonymous memory");
+
     write_log("[+] Waiting for libil2cpp.so to load...");
 
     bool load = false;
-    for (int i = 0; i < 120; i++) {
+    for (int i = 0; i < 180; i++) {
         void *handle = xdl_open("libil2cpp.so", 0);
         if (handle) {
             load = true;
             write_log("[+] Found libil2cpp.so: %p (waited %d seconds)", handle, i);
+
+            // Crucial: Wait 10 seconds for UnityMain to finish il2cpp_init and stabilize Boehm GC
+            write_log("[+] Waiting 10 seconds for Unity engine and GC initialization to complete...");
+            sleep(10);
+
             il2cpp_api_init(handle);
             il2cpp_dump(game_data_dir);
             xdl_close(handle);
@@ -174,7 +231,7 @@ void hack_start(const char *game_data_dir) {
         }
     }
     if (!load) {
-        std::string err = "libil2cpp.so not found after 120s timeout";
+        std::string err = "libil2cpp.so not found after 180s timeout";
         write_log("[-] %s", err.c_str());
         show_toast(std::string("[Il2CppDumper] FAIL: ") + err);
     }

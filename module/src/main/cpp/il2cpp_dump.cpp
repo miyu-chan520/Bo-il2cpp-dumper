@@ -711,28 +711,27 @@ void il2cpp_api_init(void *handle) {
         return;
     }
 
-    // Wait until il2cpp domain is ready (up to 60s)
+    // Wait until il2cpp domain and assemblies are fully loaded by UnityMain
     Il2CppDomain *domain = nullptr;
     int retry = 0;
     while (retry < 60) {
-        if (il2cpp_domain_get) {
+        if (il2cpp_domain_get && il2cpp_domain_get_assemblies) {
             domain = il2cpp_domain_get();
             if (domain) {
-                write_log("[+] il2cpp domain is ready: %p", domain);
-                break;
+                size_t asmsCount = 0;
+                auto asms = il2cpp_domain_get_assemblies(domain, &asmsCount);
+                if (asms && asmsCount > 0) {
+                    write_log("[+] il2cpp domain and assemblies ready: %p (%zu assemblies)", domain, asmsCount);
+                    break;
+                }
             }
         }
-        sleep(1);
+        sleep(2);
         retry++;
     }
 
-    if (domain) {
-        if (il2cpp_thread_attach) {
-            s_attached_thread = il2cpp_thread_attach(domain);
-            write_log("[+] Native thread attached to IL2CPP domain: %p", s_attached_thread);
-        }
-    } else {
-        std::string err = "Timed out waiting for il2cpp domain (60s)";
+    if (!domain) {
+        std::string err = "Timed out waiting for il2cpp domain & assemblies (120s)";
         write_log("[-] %s", err.c_str());
         show_toast(std::string("[Il2CppDumper] FAIL: ") + err);
     }
@@ -755,6 +754,12 @@ void il2cpp_dump(const char *outDir) {
         write_log("[-] %s", err.c_str());
         show_toast(std::string("[Il2CppDumper] FAIL: ") + err);
         return;
+    }
+
+    // Attach thread to IL2CPP GC now that UnityMain has stabilized
+    if (il2cpp_thread_attach) {
+        s_attached_thread = il2cpp_thread_attach(domain);
+        write_log("[+] Native thread attached to IL2CPP domain: %p", s_attached_thread);
     }
 
     size_t size = 0;
