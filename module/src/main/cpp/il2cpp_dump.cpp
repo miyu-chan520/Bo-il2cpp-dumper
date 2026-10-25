@@ -771,14 +771,14 @@ void il2cpp_dump(const char *outDir) {
         return;
     }
 
-    // Ensure output directory exists: <outDir>/files/
-    auto filesDir = std::string(outDir) + "/files";
-    mkdir(filesDir.c_str(), 0777);
-    auto outPath = filesDir + "/dump.cs";
-    auto scriptPath = filesDir + "/script.json";
-    auto strLiteralPath = filesDir + "/stringliteral.json";
+    // Ensure output directory exists: /sdcard/Bo_dump
+    std::string boDir = "/sdcard/Bo_dump";
+    mkdir(boDir.c_str(), 0777);
+    auto outPath = boDir + "/dump.cs";
+    auto scriptPath = boDir + "/script.json";
+    auto strLiteralPath = boDir + "/stringliteral.json";
 
-    write_log("[+] Found %zu assemblies. Opening streaming output files...", size);
+    write_log("[+] Found %zu assemblies. Opening streaming output files in %s...", size, boDir.c_str());
 
     LOGI("Streaming dump output directly to %s", outPath.c_str());
     std::ofstream outStream(outPath, std::ios::out | std::ios::trunc);
@@ -844,40 +844,6 @@ void il2cpp_dump(const char *outDir) {
         write_log("[+] script.json generated successfully at %s", scriptPath.c_str());
     }
 
-    // Detach current thread cleanly from IL2CPP GC runtime
-    if (il2cpp_thread_detach && s_attached_thread) {
-        il2cpp_thread_detach(s_attached_thread);
-        s_attached_thread = nullptr;
-        write_log("[+] Native thread detached from IL2CPP GC runtime successfully");
-    }
-
-    // Mirror to /sdcard/Download/ for easy user access
-    std::string dlPath = "/sdcard/Download/dump.cs";
-    std::ifstream src(outPath, std::ios::binary);
-    std::ofstream dst(dlPath, std::ios::binary);
-    if (src.is_open() && dst.is_open()) {
-        dst << src.rdbuf();
-        write_log("[+] dump.cs copied to %s", dlPath.c_str());
-    }
-
-    if (scriptOpen) {
-        std::string dlScript = "/sdcard/Download/script.json";
-        std::ifstream srcS(scriptPath, std::ios::binary);
-        std::ofstream dstS(dlScript, std::ios::binary);
-        if (srcS.is_open() && dstS.is_open()) {
-            dstS << srcS.rdbuf();
-            write_log("[+] script.json copied to %s", dlScript.c_str());
-        }
-    }
-
-    std::string dlStr = "/sdcard/Download/stringliteral.json";
-    std::ifstream srcStr(strLiteralPath, std::ios::binary);
-    std::ofstream dstStr(dlStr, std::ios::binary);
-    if (srcStr.is_open() && dstStr.is_open()) {
-        dstStr << srcStr.rdbuf();
-        write_log("[+] stringliteral.json copied to %s", dlStr.c_str());
-    }
-
     write_log("[+] ALL DUMP OPERATIONS COMPLETED SUCCESSFULLY!");
-    show_toast("[Il2CppDumper] SUCCESS! Saved to /sdcard/Download/");
+    show_toast("[Il2CppDumper] SUCCESS! Saved to /sdcard/Bo_dump/");
 }

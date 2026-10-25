@@ -4,6 +4,6 @@ ext {
     moduleName = "Il2CppDumper"
     moduleAuthor = "Perfare & Miyu"
     moduleDescription = "Modern runtime IL2CPP Dumper with streaming write, dynamic target switching and WebUI."
-    moduleVersion = "v2.0.0"
-    moduleVersionCode = 200
+    moduleVersion = "v2.1.0"
+    moduleVersionCode = 210
 }

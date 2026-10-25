@@ -46,7 +46,26 @@ private:
     void *data;
     size_t length;
 
+    bool is_dumper_enabled() {
+        // Master switch: check file flag or system property
+        if (access("/data/local/tmp/il2cppdumper_disabled", F_OK) == 0) {
+            return false;
+        }
+        char prop[PROP_VALUE_MAX] = {0};
+        __system_property_get("persist.il2cppdumper.enabled", prop);
+        if (strlen(prop) > 0 && strcmp(prop, "0") == 0) {
+            return false;
+        }
+        return true;
+    }
+
     void preSpecialize(const char *package_name, const char *app_data_dir) {
+        if (!is_dumper_enabled()) {
+            LOGI("Zygisk-Il2CppDumper is globally DISABLED by user switch");
+            api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
+            return;
+        }
+
         bool match = false;
         if (package_name) {
             if (strcmp(package_name, GamePackageName) == 0) {

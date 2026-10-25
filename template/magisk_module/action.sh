@@ -1,49 +1,33 @@
 #!/system/bin/sh
 # KernelSU / APatch / Magisk Action Script for Zygisk-Il2CppDumper
 
-PKG=$(getprop persist.il2cppdumper.package)
-if [ -z "$PKG" ]; then
-    PKG="com.dts.freefireth"
-fi
+echo "=========================================="
+echo "        Zygisk-Il2CppDumper Manager       "
+echo "=========================================="
 
-echo "========================================"
-echo "       Zygisk-Il2CppDumper Manager      "
-echo "========================================"
-echo "Current Target Package: $PKG"
+DUMP_DIR="/sdcard/Bo_dump"
+echo "Dump Directory: $DUMP_DIR"
 echo ""
 
-mkdir -p /sdcard/Download
-
-DUMP_PATH="/data/data/$PKG/files/dump.cs"
-if [ -f "$DUMP_PATH" ]; then
-    SIZE=$(ls -lh "$DUMP_PATH" | awk '{print $5}')
-    echo "[+] Found dump.cs ($SIZE) in $PKG"
-    cp "$DUMP_PATH" "/sdcard/Download/${PKG}_dump.cs"
-    chmod 666 "/sdcard/Download/${PKG}_dump.cs"
-    echo "[+] Copied to /sdcard/Download/${PKG}_dump.cs"
+if [ -d "$DUMP_DIR" ]; then
+    echo "[+] Files in $DUMP_DIR:"
+    ls -lh "$DUMP_DIR" 2>/dev/null
 else
-    echo "[-] dump.cs not found yet."
+    echo "[-] Directory $DUMP_DIR not created yet."
 fi
 
-SCRIPT_PATH="/data/data/$PKG/files/script.json"
-if [ -f "$SCRIPT_PATH" ]; then
-    SIZE=$(ls -lh "$SCRIPT_PATH" | awk '{print $5}')
-    echo "[+] Found script.json ($SIZE) in $PKG"
-    cp "$SCRIPT_PATH" "/sdcard/Download/${PKG}_script.json"
-    chmod 666 "/sdcard/Download/${PKG}_script.json"
-    echo "[+] Copied to /sdcard/Download/${PKG}_script.json"
+echo ""
+PROP_PKG=$(getprop persist.il2cppdumper.package)
+if [ -n "$PROP_PKG" ]; then
+    echo "Target Package (override): $PROP_PKG"
 else
-    echo "[-] script.json not found yet."
+    echo "Target Package: com.dts.freefireth (default)"
 fi
 
-LOG_PATH="/data/data/$PKG/files/il2cppdumper.log"
-if [ ! -f "$LOG_PATH" ]; then
-    LOG_PATH="/data/local/tmp/il2cppdumper.log"
-fi
-if [ -f "$LOG_PATH" ]; then
-    echo ""
-    echo "--- Latest Execution Log ---"
-    cat "$LOG_PATH"
+if [ -f "/data/local/tmp/il2cppdumper_disabled" ]; then
+    echo "Dumper Engine Status: [ DISABLED ]"
+else
+    echo "Dumper Engine Status: [ ENABLED ]"
 fi
 
-echo "========================================"
+echo "=========================================="

@@ -1,6 +1,6 @@
 //
 // Created by Perfare on 2020/7/4.
-// Modernized with Toast notifications and clean truncated logging.
+// Modernized with Toast notifications, memory anonymous remapping, and anti-crash lifecycle.
 //
 
 #include "hack.h"
@@ -19,15 +19,9 @@
 #include <array>
 #include <vector>
 #include <cinttypes>
-#include <fstream>
 #include <cstdarg>
 #include <mutex>
 #include <chrono>
-#include <ctime>
-
-static std::string g_log_file_primary = "";
-static std::string g_log_file_tmp = "/data/local/tmp/il2cppdumper.log";
-static std::mutex g_log_mutex;
 
 JavaVM *get_jvm() {
     static JavaVM *s_jvm = nullptr;
@@ -45,27 +39,7 @@ JavaVM *get_jvm() {
 }
 
 void init_log(const char *game_data_dir) {
-    std::lock_guard<std::mutex> lock(g_log_mutex);
-    if (game_data_dir) {
-        g_log_file_primary = std::string(game_data_dir) + "/files/il2cppdumper.log";
-    }
-
-    auto wipe_and_header = [](const std::string &path) {
-        if (path.empty()) return;
-        std::ofstream f(path, std::ios::out | std::ios::trunc);
-        if (f.is_open()) {
-            auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-            f << "==================================================\n";
-            f << " Zygisk-Il2CppDumper Execution Log\n";
-            f << " Time: " << std::ctime(&now);
-            f << "==================================================\n";
-            f.flush();
-            f.close();
-        }
-    };
-
-    if (!g_log_file_primary.empty()) wipe_and_header(g_log_file_primary);
-    wipe_and_header(g_log_file_tmp);
+    // Disk logging disabled per user configuration
 }
 
 void write_log(const char *fmt, ...) {
@@ -76,26 +50,13 @@ void write_log(const char *fmt, ...) {
     va_end(args);
 
     LOGI("%s", buf);
-
-    std::lock_guard<std::mutex> lock(g_log_mutex);
-    auto append_log = [](const std::string &path, const char *msg) {
-        if (path.empty()) return;
-        std::ofstream f(path, std::ios::out | std::ios::app);
-        if (f.is_open()) {
-            f << msg << "\n";
-            f.flush();
-        }
-    };
-
-    if (!g_log_file_primary.empty()) append_log(g_log_file_primary, buf);
-    append_log(g_log_file_tmp, buf);
 }
 
 void show_toast(const std::string &message) {
     write_log("[Toast] %s", message.c_str());
     std::thread([message]() {
         pthread_setname_np(pthread_self(), "AsyncReadWorker");
-        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
         JavaVM *jvm = get_jvm();
         if (!jvm) return;
         JNIEnv *env = nullptr;
@@ -202,9 +163,7 @@ void hide_self_from_maps() {
 
 void hack_start(const char *game_data_dir) {
     pthread_setname_np(pthread_self(), "UnityGfxDevice");
-    init_log(game_data_dir);
     write_log("[+] Zygisk-Il2CppDumper attached. Data dir: %s", game_data_dir);
-    write_log("[+] Camouflaged worker thread as UnityGfxDevice (tid: %d)", gettid());
 
     // Hide our module mappings from /proc/self/maps to bypass anti-cheat scanners
     hide_self_from_maps();
@@ -219,14 +178,18 @@ void hack_start(const char *game_data_dir) {
             load = true;
             write_log("[+] Found libil2cpp.so: %p (waited %d seconds)", handle, i);
 
-            // Crucial: Wait 10 seconds for UnityMain to finish il2cpp_init and stabilize Boehm GC
+            // Wait 10 seconds for UnityMain to finish il2cpp_init and stabilize Boehm GC
             write_log("[+] Waiting 10 seconds for Unity engine and GC initialization to complete...");
             sleep(10);
 
             il2cpp_api_init(handle);
-            il2cpp_dump(game_data_dir);
-            xdl_close(handle);
-            write_log("[+] Closed libil2cpp.so handle and cleanly unlinked references");
+            il2cpp_dump("/sdcard/Bo_dump");
+
+            // DO NOT call xdl_close(handle) to prevent game crash
+            write_log("[+] Dump finished. Keeping thread dormant to preserve game stability.");
+            while (true) {
+                sleep(3600);
+            }
             break;
         } else {
             sleep(1);
