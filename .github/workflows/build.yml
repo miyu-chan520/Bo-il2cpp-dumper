@@ -32,8 +32,10 @@ jobs:
         sed -i "s/com.game.packagename/$TARGET_PKG/g" module/src/main/cpp/game.h
         sed -i "s/com.dts.freefireth/$TARGET_PKG/g" module/src/main/cpp/game.h
         ./gradlew :module:assembleRelease
+        ls -la out/
 
     - uses: actions/upload-artifact@v4
       with:
         name: zygisk-il2cppdumper
-        path: out/magisk_module_release/*.zip
+        path: out/*.zip
+        if-no-files-found: error
