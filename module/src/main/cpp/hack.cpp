@@ -18,11 +18,13 @@
 #include <array>
 
 void hack_start(const char *game_data_dir) {
+    LOGI("hack_start started for %s in thread %d", game_data_dir, gettid());
     bool load = false;
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < 120; i++) {
         void *handle = xdl_open("libil2cpp.so", 0);
         if (handle) {
             load = true;
+            LOGI("Found libil2cpp.so: %p (after %d seconds)", handle, i);
             il2cpp_api_init(handle);
             il2cpp_dump(game_data_dir);
             break;
@@ -31,7 +33,7 @@ void hack_start(const char *game_data_dir) {
         }
     }
     if (!load) {
-        LOGI("libil2cpp.so not found in thread %d", gettid());
+        LOGE("libil2cpp.so not found after 120s in thread %d", gettid());
     }
 }
 

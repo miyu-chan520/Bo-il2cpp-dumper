@@ -6,6 +6,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <cinttypes>
+#include <sys/system_properties.h>
 #include "hack.h"
 #include "zygisk.hpp"
 #include "game.h"
@@ -46,7 +47,19 @@ private:
     size_t length;
 
     void preSpecialize(const char *package_name, const char *app_data_dir) {
-        if (strcmp(package_name, GamePackageName) == 0) {
+        bool match = false;
+        if (package_name) {
+            if (strcmp(package_name, GamePackageName) == 0) {
+                match = true;
+            } else {
+                char prop[PROP_VALUE_MAX] = {0};
+                __system_property_get("persist.il2cppdumper.package", prop);
+                if (strlen(prop) > 0 && strcmp(package_name, prop) == 0) {
+                    match = true;
+                }
+            }
+        }
+        if (match) {
             LOGI("detect game: %s", package_name);
             enable_hack = true;
             game_data_dir = new char[strlen(app_data_dir) + 1];

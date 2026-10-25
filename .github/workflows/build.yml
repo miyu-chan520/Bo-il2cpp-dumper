@@ -1,10 +1,13 @@
 name: Build
 on:
+  push:
+    branches: [ master, main ]
   workflow_dispatch:
     inputs:
       package_name:
-        description: "Package name of the game:"
-        required: true
+        description: "Package name of the game (default: com.dts.freefireth):"
+        required: false
+        default: "com.dts.freefireth"
 
 jobs:
   build:
@@ -20,11 +23,17 @@ jobs:
 
     - run: |
         chmod +x ./gradlew
-        sed -i 's/moduleDescription = "/moduleDescription = "(${{ github.event.inputs.package_name }}) /g' module.gradle
-        sed -i "s/com.game.packagename/${{ github.event.inputs.package_name }}/g" module/src/main/cpp/game.h
+        TARGET_PKG="${{ github.event.inputs.package_name }}"
+        if [ -z "$TARGET_PKG" ]; then
+          TARGET_PKG="com.dts.freefireth"
+        fi
+        echo "Building Zygisk module for package: $TARGET_PKG"
+        sed -i "s/moduleDescription = \"/moduleDescription = \"($TARGET_PKG) /g" module.gradle
+        sed -i "s/com.game.packagename/$TARGET_PKG/g" module/src/main/cpp/game.h
+        sed -i "s/com.dts.freefireth/$TARGET_PKG/g" module/src/main/cpp/game.h
         ./gradlew :module:assembleRelease
 
     - uses: actions/upload-artifact@v4
       with:
         name: zygisk-il2cppdumper
-        path: out/magisk_module_release/
+        path: out/magisk_module_release/*.zip
