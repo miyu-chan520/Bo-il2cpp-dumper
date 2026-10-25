@@ -36,4 +36,14 @@ else
     echo "[-] script.json not found yet."
 fi
 
+LOG_PATH="/data/data/$PKG/files/il2cppdumper.log"
+if [ ! -f "$LOG_PATH" ]; then
+    LOG_PATH="/data/local/tmp/il2cppdumper.log"
+fi
+if [ -f "$LOG_PATH" ]; then
+    echo ""
+    echo "--- Latest Execution Log ---"
+    cat "$LOG_PATH"
+fi
+
 echo "========================================"

@@ -15,12 +15,14 @@
     button:active { background: #388E3C; }
     .btn-secondary { background: #2196F3; }
     .btn-secondary:active { background: #1976D2; }
-    .status { margin-top: 12px; padding: 10px; border-radius: 6px; font-size: 13px; font-family: monospace; white-space: pre-wrap; background: #000; color: #00e676; max-height: 200px; overflow-y: auto; }
+    .btn-warning { background: #FF9800; }
+    .btn-warning:active { background: #F57C00; }
+    .status { margin-top: 12px; padding: 10px; border-radius: 6px; font-size: 13px; font-family: monospace; white-space: pre-wrap; background: #000; color: #00e676; max-height: 250px; overflow-y: auto; }
   </style>
 </head>
 <body>
   <h1>Zygisk-Il2CppDumper</h1>
-  <p>Runtime IL2CPP Dumper for Unity Games</p>
+  <p>Runtime IL2CPP Dumper with Toast Notifications</p>
 
   <div class="card">
     <label>Target Game Package:</label>
@@ -29,7 +31,8 @@
   </div>
 
   <div class="card">
-    <button class="btn-secondary" onclick="checkDump()">Check & Copy dump.cs to Download</button>
+    <button class="btn-secondary" onclick="checkDump()">Check & Copy dump.cs + script.json to Download</button>
+    <button class="btn-warning" onclick="viewLog()">View Latest Execution Log</button>
     <div id="output" class="status">Ready</div>
   </div>
 
@@ -70,8 +73,16 @@
     async function checkDump() {
       const pkg = document.getElementById('pkgInput').value.trim() || 'com.dts.freefireth';
       log('Checking dump for ' + pkg + '...');
-      const checkCmd = 'sh -c "if [ -f /data/data/' + pkg + '/files/dump.cs ]; then cp /data/data/' + pkg + '/files/dump.cs /sdcard/Download/' + pkg + '_dump.cs && chmod 666 /sdcard/Download/' + pkg + '_dump.cs && echo [SUCCESS] dump.cs copied to /sdcard/Download/' + pkg + '_dump.cs; else echo [-] dump.cs not generated yet; fi"';
+      const checkCmd = 'sh -c "mkdir -p /sdcard/Download; if [ -f /data/data/' + pkg + '/files/dump.cs ]; then cp /data/data/' + pkg + '/files/dump.cs /sdcard/Download/' + pkg + '_dump.cs && chmod 666 /sdcard/Download/' + pkg + '_dump.cs && echo [SUCCESS] dump.cs copied to Download; else echo [-] dump.cs not generated yet; fi; if [ -f /data/data/' + pkg + '/files/script.json ]; then cp /data/data/' + pkg + '/files/script.json /sdcard/Download/' + pkg + '_script.json && chmod 666 /sdcard/Download/' + pkg + '_script.json && echo [SUCCESS] script.json copied to Download; fi"';
       const res = await exec(checkCmd);
+      log(res.stdout || res.stderr);
+    }
+
+    async function viewLog() {
+      const pkg = document.getElementById('pkgInput').value.trim() || 'com.dts.freefireth';
+      log('Reading latest log...');
+      const logCmd = 'sh -c "if [ -f /data/data/' + pkg + '/files/il2cppdumper.log ]; then cat /data/data/' + pkg + '/files/il2cppdumper.log; elif [ -f /data/local/tmp/il2cppdumper.log ]; then cat /data/local/tmp/il2cppdumper.log; else echo [-] No log file found yet. Launch the game first.; fi"';
+      const res = await exec(logCmd);
       log(res.stdout || res.stderr);
     }
 

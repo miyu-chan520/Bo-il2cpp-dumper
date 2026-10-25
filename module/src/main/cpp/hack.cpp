@@ -1,5 +1,6 @@
 //
 // Created by Perfare on 2020/7/4.
+// Modernized with Toast notifications and clean truncated logging.
 //
 
 #include "hack.h"
@@ -16,15 +17,149 @@
 #include <sys/mman.h>
 #include <linux/unistd.h>
 #include <array>
+#include <fstream>
+#include <cstdarg>
+#include <mutex>
+#include <chrono>
+#include <ctime>
+
+static std::string g_log_file_primary = "";
+static std::string g_log_file_tmp = "/data/local/tmp/il2cppdumper.log";
+static std::mutex g_log_mutex;
+
+JavaVM *get_jvm() {
+    static JavaVM *s_jvm = nullptr;
+    if (s_jvm) return s_jvm;
+    void *libart = dlopen("libart.so", RTLD_NOW);
+    if (!libart) return nullptr;
+    auto JNI_GetCreatedJavaVMs = (jint (*)(JavaVM **, jsize, jsize *)) dlsym(libart, "JNI_GetCreatedJavaVMs");
+    if (!JNI_GetCreatedJavaVMs) return nullptr;
+    JavaVM *vms_buf[1];
+    jsize num_vms = 0;
+    if (JNI_GetCreatedJavaVMs(vms_buf, 1, &num_vms) == JNI_OK && num_vms > 0) {
+        s_jvm = vms_buf[0];
+    }
+    return s_jvm;
+}
+
+void init_log(const char *game_data_dir) {
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    if (game_data_dir) {
+        g_log_file_primary = std::string(game_data_dir) + "/files/il2cppdumper.log";
+    }
+
+    auto wipe_and_header = [](const std::string &path) {
+        if (path.empty()) return;
+        std::ofstream f(path, std::ios::out | std::ios::trunc);
+        if (f.is_open()) {
+            auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+            f << "==================================================\n";
+            f << " Zygisk-Il2CppDumper Execution Log\n";
+            f << " Time: " << std::ctime(&now);
+            f << "==================================================\n";
+            f.flush();
+            f.close();
+        }
+    };
+
+    if (!g_log_file_primary.empty()) wipe_and_header(g_log_file_primary);
+    wipe_and_header(g_log_file_tmp);
+}
+
+void write_log(const char *fmt, ...) {
+    char buf[1024];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+
+    LOGI("%s", buf);
+
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    auto append_log = [](const std::string &path, const char *msg) {
+        if (path.empty()) return;
+        std::ofstream f(path, std::ios::out | std::ios::app);
+        if (f.is_open()) {
+            f << msg << "\n";
+            f.flush();
+        }
+    };
+
+    if (!g_log_file_primary.empty()) append_log(g_log_file_primary, buf);
+    append_log(g_log_file_tmp, buf);
+}
+
+void show_toast(const std::string &message) {
+    write_log("[Toast] %s", message.c_str());
+    std::thread([message]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        JavaVM *jvm = get_jvm();
+        if (!jvm) return;
+        JNIEnv *env = nullptr;
+        if (jvm->AttachCurrentThread(&env, nullptr) != JNI_OK || !env) return;
+
+        jclass at_clz = env->FindClass("android/app/ActivityThread");
+        if (!at_clz) { env->ExceptionClear(); return; }
+        jmethodID cur_app_mid = env->GetStaticMethodID(at_clz, "currentApplication", "()Landroid/app/Application;");
+        if (!cur_app_mid) { env->ExceptionClear(); return; }
+        jobject context = env->CallStaticObjectMethod(at_clz, cur_app_mid);
+        if (!context) { env->ExceptionClear(); return; }
+
+        jclass looper_clz = env->FindClass("android/os/Looper");
+        if (!looper_clz) { env->ExceptionClear(); return; }
+        jmethodID my_looper_mid = env->GetStaticMethodID(looper_clz, "myLooper", "()Landroid/os/Looper;");
+        jobject my_looper = env->CallStaticObjectMethod(looper_clz, my_looper_mid);
+        if (!my_looper) {
+            jmethodID prepare_mid = env->GetStaticMethodID(looper_clz, "prepare", "()V");
+            if (prepare_mid) env->CallStaticVoidMethod(looper_clz, prepare_mid);
+            my_looper = env->CallStaticObjectMethod(looper_clz, my_looper_mid);
+        }
+
+        jclass toast_clz = env->FindClass("android/widget/Toast");
+        if (!toast_clz) { env->ExceptionClear(); return; }
+        jmethodID make_text_mid = env->GetStaticMethodID(toast_clz, "makeText", "(Landroid/content/Context;Ljava/lang/CharSequence;I)Landroid/widget/Toast;");
+        if (!make_text_mid) { env->ExceptionClear(); return; }
+
+        jstring jmsg = env->NewStringUTF(message.c_str());
+        jobject toast = env->CallStaticObjectMethod(toast_clz, make_text_mid, context, jmsg, (jint) 1);
+        if (toast) {
+            jmethodID show_mid = env->GetMethodID(toast_clz, "show", "()V");
+            if (show_mid) env->CallVoidMethod(toast, show_mid);
+        }
+        env->DeleteLocalRef(jmsg);
+
+        if (my_looper) {
+            jobject global_looper = env->NewGlobalRef(my_looper);
+            std::thread([jvm, global_looper]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds(3500));
+                JNIEnv *qenv = nullptr;
+                if (jvm->AttachCurrentThread(&qenv, nullptr) == JNI_OK && qenv) {
+                    jclass lclz = qenv->FindClass("android/os/Looper");
+                    if (lclz) {
+                        jmethodID qmid = qenv->GetMethodID(lclz, "quitSafely", "()V");
+                        if (qmid) qenv->CallVoidMethod(global_looper, qmid);
+                    }
+                    qenv->DeleteGlobalRef(global_looper);
+                }
+            }).detach();
+
+            jmethodID loop_mid = env->GetStaticMethodID(looper_clz, "loop", "()V");
+            if (loop_mid) env->CallStaticVoidMethod(looper_clz, loop_mid);
+        }
+    }).detach();
+}
 
 void hack_start(const char *game_data_dir) {
-    LOGI("hack_start started for %s in thread %d", game_data_dir, gettid());
+    init_log(game_data_dir);
+    write_log("[+] Zygisk-Il2CppDumper attached. Data dir: %s", game_data_dir);
+    write_log("[+] Waiting for libil2cpp.so to load...");
+
     bool load = false;
     for (int i = 0; i < 120; i++) {
         void *handle = xdl_open("libil2cpp.so", 0);
         if (handle) {
             load = true;
-            LOGI("Found libil2cpp.so: %p (after %d seconds)", handle, i);
+            write_log("[+] Found libil2cpp.so: %p (waited %d seconds)", handle, i);
             il2cpp_api_init(handle);
             il2cpp_dump(game_data_dir);
             break;
@@ -33,7 +168,9 @@ void hack_start(const char *game_data_dir) {
         }
     }
     if (!load) {
-        LOGE("libil2cpp.so not found after 120s in thread %d", gettid());
+        std::string err = "libil2cpp.so not found after 120s timeout";
+        write_log("[-] %s", err.c_str());
+        show_toast(std::string("[Il2CppDumper] FAIL: ") + err);
     }
 }
 
@@ -114,7 +251,6 @@ struct NativeBridgeCallbacks {
 };
 
 bool NativeBridgeLoad(const char *game_data_dir, int api_level, void *data, size_t length) {
-    //TODO 等待houdini初始化
     sleep(5);
 
     auto libart = dlopen("libart.so", RTLD_NOW);

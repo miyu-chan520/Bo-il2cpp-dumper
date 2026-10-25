@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include "hack.h"
 #include "xdl.h"
 #include "log.h"
 #include "il2cpp-tabledefs.h"
@@ -454,16 +455,18 @@ std::string dump_type(const Il2CppType *type) {
 }
 
 void il2cpp_api_init(void *handle) {
-    LOGI("il2cpp_handle: %p", handle);
+    write_log("[+] Initializing IL2CPP API functions from %p...", handle);
     init_il2cpp_api(handle);
     if (il2cpp_domain_get_assemblies) {
         Dl_info dlInfo;
         if (dladdr((void *) il2cpp_domain_get_assemblies, &dlInfo)) {
             il2cpp_base = reinterpret_cast<uint64_t>(dlInfo.dli_fbase);
         }
-        LOGI("il2cpp_base: %" PRIx64"", il2cpp_base);
+        write_log("[+] il2cpp_base: 0x%" PRIx64, il2cpp_base);
     } else {
-        LOGE("Failed to initialize il2cpp api.");
+        std::string err = "Failed to initialize il2cpp APIs (missing symbols)";
+        write_log("[-] %s", err.c_str());
+        show_toast(std::string("[Il2CppDumper] FAIL: ") + err);
         return;
     }
 
@@ -474,40 +477,49 @@ void il2cpp_api_init(void *handle) {
         if (il2cpp_domain_get) {
             domain = il2cpp_domain_get();
             if (domain) {
-                LOGI("il2cpp domain is ready: %p", domain);
+                write_log("[+] il2cpp domain is ready: %p", domain);
                 break;
             }
         }
-        LOGI("Waiting for il2cpp domain initialization... (%d/60)", retry);
         sleep(1);
         retry++;
     }
 
     if (domain) {
         il2cpp_thread_attach(domain);
-        LOGI("il2cpp thread attached successfully");
+        write_log("[+] Native thread attached to IL2CPP domain successfully");
     } else {
-        LOGE("Timed out waiting for il2cpp domain!");
+        std::string err = "Timed out waiting for il2cpp domain (60s)";
+        write_log("[-] %s", err.c_str());
+        show_toast(std::string("[Il2CppDumper] FAIL: ") + err);
     }
 }
 
 void il2cpp_dump(const char *outDir) {
-    LOGI("Starting il2cpp dump for %s...", outDir);
+    write_log("[+] Starting IL2CPP dump for %s...", outDir);
+    show_toast("[Il2CppDumper] Dumping in progress, please wait...");
+
     if (!il2cpp_domain_get || !il2cpp_domain_get_assemblies) {
-        LOGE("Required il2cpp APIs are not found!");
+        std::string err = "Required il2cpp APIs are missing";
+        write_log("[-] %s", err.c_str());
+        show_toast(std::string("[Il2CppDumper] FAIL: ") + err);
         return;
     }
 
     auto domain = il2cpp_domain_get();
     if (!domain) {
-        LOGE("il2cpp domain is null, cannot dump!");
+        std::string err = "il2cpp domain is null, cannot dump";
+        write_log("[-] %s", err.c_str());
+        show_toast(std::string("[Il2CppDumper] FAIL: ") + err);
         return;
     }
 
     size_t size = 0;
     auto assemblies = il2cpp_domain_get_assemblies(domain, &size);
     if (!assemblies || size == 0) {
-        LOGE("No assemblies found!");
+        std::string err = "No assemblies found in domain";
+        write_log("[-] %s", err.c_str());
+        show_toast(std::string("[Il2CppDumper] FAIL: ") + err);
         return;
     }
 
@@ -516,6 +528,8 @@ void il2cpp_dump(const char *outDir) {
     mkdir(filesDir.c_str(), 0777);
     auto outPath = filesDir + "/dump.cs";
     auto scriptPath = filesDir + "/script.json";
+
+    write_log("[+] Found %zu assemblies. Opening output streams...", size);
 
     LOGI("Streaming dump output directly to %s", outPath.c_str());
     std::ofstream outStream(outPath, std::ios::out | std::ios::trunc);
@@ -584,12 +598,12 @@ void il2cpp_dump(const char *outDir) {
     }
 
     outStream.close();
-    LOGI("IL2CPP dump done successfully at %s!", outPath.c_str());
+    write_log("[+] dump.cs generated successfully at %s", outPath.c_str());
 
     if (scriptOpen) {
         scriptStream << "\n  ],\n  \"ScriptString\": [],\n  \"ScriptMetadata\": [],\n  \"ScriptMetadataMethod\": []\n}\n";
         scriptStream.close();
-        LOGI("script.json generated successfully at %s!", scriptPath.c_str());
+        write_log("[+] script.json generated successfully at %s", scriptPath.c_str());
     }
 
     // Also attempt to copy to /sdcard/Download/ for easy access
@@ -598,7 +612,7 @@ void il2cpp_dump(const char *outDir) {
     std::ofstream dst(dlPath, std::ios::binary);
     if (src.is_open() && dst.is_open()) {
         dst << src.rdbuf();
-        LOGI("Dump also copied to %s", dlPath.c_str());
+        write_log("[+] dump.cs copied to %s", dlPath.c_str());
     }
 
     if (scriptOpen) {
@@ -607,7 +621,10 @@ void il2cpp_dump(const char *outDir) {
         std::ofstream dstS(dlScript, std::ios::binary);
         if (srcS.is_open() && dstS.is_open()) {
             dstS << srcS.rdbuf();
-            LOGI("script.json also copied to %s", dlScript.c_str());
+            write_log("[+] script.json copied to %s", dlScript.c_str());
         }
     }
+
+    write_log("[+] ALL DUMP OPERATIONS COMPLETED SUCCESSFULLY!");
+    show_toast("[Il2CppDumper] SUCCESS! Saved to /sdcard/Download/");
 }
