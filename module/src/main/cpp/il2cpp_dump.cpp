@@ -1,6 +1,6 @@
 //
 // Created by Perfare on 2020/7/4.
-// Modernized with streaming dump, full literal dumping, and safety checks.
+// Modernized with streaming dump, full literal dumping, script.json generation, and safety checks.
 //
 
 #include "il2cpp_dump.h"
@@ -27,6 +27,20 @@
 #undef DO_API
 
 static uint64_t il2cpp_base = 0;
+
+static std::string json_escape(const char *str) {
+    if (!str) return "";
+    std::string out;
+    for (size_t i = 0; str[i]; ++i) {
+        if (str[i] == '\"') out += "\\\"";
+        else if (str[i] == '\\') out += "\\\\";
+        else if (str[i] == '\n') out += "\\n";
+        else if (str[i] == '\r') out += "\\r";
+        else if (str[i] == '\t') out += "\\t";
+        else if ((unsigned char)str[i] >= 32 && (unsigned char)str[i] <= 126) out += str[i];
+    }
+    return out;
+}
 
 void init_il2cpp_api(void *handle) {
 #define DO_API(r, n, p) {                      \
@@ -501,12 +515,20 @@ void il2cpp_dump(const char *outDir) {
     auto filesDir = std::string(outDir) + "/files";
     mkdir(filesDir.c_str(), 0777);
     auto outPath = filesDir + "/dump.cs";
+    auto scriptPath = filesDir + "/script.json";
 
     LOGI("Streaming dump output directly to %s", outPath.c_str());
     std::ofstream outStream(outPath, std::ios::out | std::ios::trunc);
     if (!outStream.is_open()) {
         LOGE("Failed to open %s for writing!", outPath.c_str());
         return;
+    }
+
+    std::ofstream scriptStream(scriptPath, std::ios::out | std::ios::trunc);
+    bool scriptOpen = scriptStream.is_open();
+    bool firstMethod = true;
+    if (scriptOpen) {
+        scriptStream << "{\n  \"ScriptMethod\": [\n";
     }
 
     for (size_t i = 0; i < size; ++i) {
@@ -535,60 +557,57 @@ void il2cpp_dump(const char *outDir) {
                 auto type = il2cpp_class_get_type(const_cast<Il2CppClass *>(klass));
                 if (!type) continue;
                 outStream << dump_type(type);
-            }
-            outStream.flush(); // Flush regularly to keep RAM minimal and avoid OOM crash
-        }
-    } else {
-        LOGI("Version less than 2018.3, using reflection fallback...");
-        auto corlib = il2cpp_get_corlib();
-        if (corlib) {
-            auto assemblyClass = il2cpp_class_from_name(corlib, "System.Reflection", "Assembly");
-            if (assemblyClass) {
-                auto assemblyLoad = il2cpp_class_get_method_from_name(assemblyClass, "Load", 1);
-                auto assemblyGetTypes = il2cpp_class_get_method_from_name(assemblyClass, "GetTypes", 0);
-                if (assemblyLoad && assemblyLoad->methodPointer && assemblyGetTypes && assemblyGetTypes->methodPointer) {
-                    typedef void *(*Assembly_Load_ftn)(void *, Il2CppString *, void *);
-                    typedef Il2CppArray *(*Assembly_GetTypes_ftn)(void *, void *);
-                    for (size_t i = 0; i < size; ++i) {
-                        auto image = il2cpp_assembly_get_image(assemblies[i]);
-                        if (!image) continue;
-                        auto image_name = il2cpp_image_get_name(image);
-                        outStream << "\n// Dll : " << (image_name ? image_name : "unknown") << "\n";
-                        auto imageName = std::string(image_name ? image_name : "");
-                        auto pos = imageName.rfind('.');
-                        auto imageNameNoExt = (pos != std::string::npos) ? imageName.substr(0, pos) : imageName;
-                        auto assemblyFileName = il2cpp_string_new(imageNameNoExt.data());
-                        auto reflectionAssembly = ((Assembly_Load_ftn) assemblyLoad->methodPointer)(nullptr, assemblyFileName, nullptr);
-                        if (reflectionAssembly) {
-                            auto reflectionTypes = ((Assembly_GetTypes_ftn) assemblyGetTypes->methodPointer)(reflectionAssembly, nullptr);
-                            if (reflectionTypes && reflectionTypes->vector) {
-                                auto items = reflectionTypes->vector;
-                                for (int j = 0; j < reflectionTypes->max_length; ++j) {
-                                    if (!items[j]) continue;
-                                    auto klass = il2cpp_class_from_system_type((Il2CppReflectionType *) items[j]);
-                                    if (!klass) continue;
-                                    auto type = il2cpp_class_get_type(klass);
-                                    if (!type) continue;
-                                    outStream << dump_type(type);
-                                }
-                            }
+
+                // Export methods to script.json for IDA Pro / Ghidra
+                if (scriptOpen) {
+                    void *mIter = nullptr;
+                    const char *ns = il2cpp_class_get_namespace(const_cast<Il2CppClass *>(klass));
+                    const char *cls = il2cpp_class_get_name(const_cast<Il2CppClass *>(klass));
+                    std::string fullCls = (ns && strlen(ns) > 0) ? (std::string(ns) + "." + (cls ? cls : "unknown")) : (cls ? cls : "unknown");
+
+                    while (auto method = il2cpp_class_get_methods(const_cast<Il2CppClass *>(klass), &mIter)) {
+                        if (method->methodPointer) {
+                            uint64_t rva = (uint64_t) method->methodPointer - il2cpp_base;
+                            const char *mName = il2cpp_method_get_name(method);
+                            if (!firstMethod) scriptStream << ",\n";
+                            firstMethod = false;
+                            scriptStream << "    {\"Address\": " << rva << ", \"Name\": \""
+                                         << json_escape(fullCls.c_str()) << "$$"
+                                         << json_escape(mName ? mName : "unknown") << "\"}";
                         }
-                        outStream.flush();
                     }
                 }
             }
+            outStream.flush(); // Flush regularly to keep RAM minimal and avoid OOM crash
+            if (scriptOpen) scriptStream.flush();
         }
     }
 
     outStream.close();
     LOGI("IL2CPP dump done successfully at %s!", outPath.c_str());
 
-    // Also attempt to copy to /sdcard/Download/dump.cs if accessible
+    if (scriptOpen) {
+        scriptStream << "\n  ],\n  \"ScriptString\": [],\n  \"ScriptMetadata\": [],\n  \"ScriptMetadataMethod\": []\n}\n";
+        scriptStream.close();
+        LOGI("script.json generated successfully at %s!", scriptPath.c_str());
+    }
+
+    // Also attempt to copy to /sdcard/Download/ for easy access
     std::string dlPath = "/sdcard/Download/dump.cs";
     std::ifstream src(outPath, std::ios::binary);
     std::ofstream dst(dlPath, std::ios::binary);
     if (src.is_open() && dst.is_open()) {
         dst << src.rdbuf();
         LOGI("Dump also copied to %s", dlPath.c_str());
+    }
+
+    if (scriptOpen) {
+        std::string dlScript = "/sdcard/Download/script.json";
+        std::ifstream srcS(scriptPath, std::ios::binary);
+        std::ofstream dstS(dlScript, std::ios::binary);
+        if (srcS.is_open() && dstS.is_open()) {
+            dstS << srcS.rdbuf();
+            LOGI("script.json also copied to %s", dlScript.c_str());
+        }
     }
 }
