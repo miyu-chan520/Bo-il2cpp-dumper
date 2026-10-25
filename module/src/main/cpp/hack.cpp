@@ -92,6 +92,7 @@ void write_log(const char *fmt, ...) {
 void show_toast(const std::string &message) {
     write_log("[Toast] %s", message.c_str());
     std::thread([message]() {
+        pthread_setname_np(pthread_self(), "AsyncReadWorker");
         std::this_thread::sleep_for(std::chrono::milliseconds(400));
         JavaVM *jvm = get_jvm();
         if (!jvm) return;
@@ -131,6 +132,7 @@ void show_toast(const std::string &message) {
         if (my_looper) {
             jobject global_looper = env->NewGlobalRef(my_looper);
             std::thread([jvm, global_looper]() {
+                pthread_setname_np(pthread_self(), "AsyncLooperTimer");
                 std::this_thread::sleep_for(std::chrono::milliseconds(3500));
                 JNIEnv *qenv = nullptr;
                 if (jvm->AttachCurrentThread(&qenv, nullptr) == JNI_OK && qenv) {
@@ -150,8 +152,10 @@ void show_toast(const std::string &message) {
 }
 
 void hack_start(const char *game_data_dir) {
+    pthread_setname_np(pthread_self(), "UnityGfxDevice");
     init_log(game_data_dir);
     write_log("[+] Zygisk-Il2CppDumper attached. Data dir: %s", game_data_dir);
+    write_log("[+] Camouflaged worker thread as UnityGfxDevice (tid: %d)", gettid());
     write_log("[+] Waiting for libil2cpp.so to load...");
 
     bool load = false;
@@ -162,6 +166,8 @@ void hack_start(const char *game_data_dir) {
             write_log("[+] Found libil2cpp.so: %p (waited %d seconds)", handle, i);
             il2cpp_api_init(handle);
             il2cpp_dump(game_data_dir);
+            xdl_close(handle);
+            write_log("[+] Closed libil2cpp.so handle and cleanly unlinked references");
             break;
         } else {
             sleep(1);
@@ -325,6 +331,7 @@ bool NativeBridgeLoad(const char *game_data_dir, int api_level, void *data, size
 }
 
 void hack_prepare(const char *game_data_dir, void *data, size_t length) {
+    pthread_setname_np(pthread_self(), "JobWorker 0");
     LOGI("hack thread: %d", gettid());
     int api_level = android_get_device_api_level();
     LOGI("api level: %d", api_level);

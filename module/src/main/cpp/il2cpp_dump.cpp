@@ -1,6 +1,7 @@
 //
-// Created by Perfare on 2020/7/4.
-// Modernized with streaming dump, full literal dumping, script.json generation, and safety checks.
+// Modernized IL2CPP Dumper Engine
+// Complete type resolution, recursive nested class discovery, constant literal extraction,
+// streaming output, script.json generation, and clean GC thread lifecycle management.
 //
 
 #include "il2cpp_dump.h"
@@ -15,6 +16,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unordered_set>
 #include "hack.h"
 #include "xdl.h"
 #include "log.h"
@@ -28,6 +30,7 @@
 #undef DO_API
 
 static uint64_t il2cpp_base = 0;
+static Il2CppThread *s_attached_thread = nullptr;
 
 static std::string json_escape(const char *str) {
     if (!str) return "";
@@ -54,6 +57,29 @@ void init_il2cpp_api(void *handle) {
 #include "il2cpp-api-functions.h"
 
 #undef DO_API
+}
+
+static std::string get_type_name(const Il2CppType *type) {
+    if (!type) return "object";
+    if (il2cpp_type_get_name) {
+        char *str = il2cpp_type_get_name(type);
+        if (str) {
+            std::string name(str);
+            if (il2cpp_free) {
+                il2cpp_free(str);
+            }
+            if (!name.empty() && name.back() == '&') {
+                name.pop_back();
+            }
+            return name;
+        }
+    }
+    auto klass = il2cpp_class_from_type(type);
+    if (klass) {
+        const char *kname = il2cpp_class_get_name(klass);
+        if (kname) return kname;
+    }
+    return "object";
 }
 
 std::string get_method_modifier(uint32_t flags) {
@@ -137,14 +163,12 @@ std::string dump_method(Il2CppClass *klass) {
         outPut << get_method_modifier(flags);
         
         auto return_type = il2cpp_method_get_return_type(method);
-        if (!return_type) continue;
         if (_il2cpp_type_is_byref(return_type)) {
             outPut << "ref ";
         }
-        auto return_class = il2cpp_class_from_type(return_type);
-        const char *ret_name = return_class ? il2cpp_class_get_name(return_class) : "void";
+        std::string ret_name = get_type_name(return_type);
         const char *m_name = il2cpp_method_get_name(method);
-        outPut << (ret_name ? ret_name : "void") << " " << (m_name ? m_name : "unknown_method") << "(";
+        outPut << ret_name << " " << (m_name ? m_name : "unknown_method") << "(";
         
         auto param_count = il2cpp_method_get_param_count(method);
         for (uint32_t i = 0; i < param_count; ++i) {
@@ -167,10 +191,9 @@ std::string dump_method(Il2CppClass *klass) {
                     outPut << "[Out] ";
                 }
             }
-            auto parameter_class = il2cpp_class_from_type(param);
-            const char *param_cls_name = parameter_class ? il2cpp_class_get_name(parameter_class) : "object";
+            std::string param_type_name = get_type_name(param);
             const char *param_name = il2cpp_method_get_param_name(method, i);
-            outPut << (param_cls_name ? param_cls_name : "object") << " "
+            outPut << param_type_name << " "
                    << (param_name ? param_name : "p") << ", ";
         }
         if (param_count > 0) {
@@ -192,20 +215,18 @@ std::string dump_property(Il2CppClass *klass) {
         auto set = il2cpp_property_get_set_method(prop);
         auto prop_name = il2cpp_property_get_name(prop);
         outPut << "\t";
-        Il2CppClass *prop_class = nullptr;
+        const Il2CppType *prop_type = nullptr;
         uint32_t iflags = 0;
         if (get) {
             outPut << get_method_modifier(il2cpp_method_get_flags(get, &iflags));
-            auto ret_type = il2cpp_method_get_return_type(get);
-            if (ret_type) prop_class = il2cpp_class_from_type(ret_type);
+            prop_type = il2cpp_method_get_return_type(get);
         } else if (set) {
             outPut << get_method_modifier(il2cpp_method_get_flags(set, &iflags));
-            auto param = il2cpp_method_get_param(set, 0);
-            if (param) prop_class = il2cpp_class_from_type(param);
+            prop_type = il2cpp_method_get_param(set, 0);
         }
-        if (prop_class) {
-            const char *p_cls_name = il2cpp_class_get_name(prop_class);
-            outPut << (p_cls_name ? p_cls_name : "object") << " " << (prop_name ? prop_name : "unknown_prop") << " { ";
+        if (prop_type) {
+            std::string p_cls_name = get_type_name(prop_type);
+            outPut << p_cls_name << " " << (prop_name ? prop_name : "unknown_prop") << " { ";
             if (get) {
                 outPut << "get; ";
             }
@@ -262,17 +283,71 @@ std::string dump_field(Il2CppClass *klass) {
         }
         auto field_type = il2cpp_field_get_type(field);
         if (!field_type) continue;
-        auto field_class = il2cpp_class_from_type(field_type);
-        const char *fld_cls_name = field_class ? il2cpp_class_get_name(field_class) : "object";
+        std::string fld_cls_name = get_type_name(field_type);
         const char *fld_name = il2cpp_field_get_name(field);
-        outPut << (fld_cls_name ? fld_cls_name : "object") << " " << (fld_name ? fld_name : "unknown_field");
+        outPut << fld_cls_name << " " << (fld_name ? fld_name : "unknown_field");
 
         // Dump constant literals (primitives, enums, strings)
         if (attrs & FIELD_ATTRIBUTE_LITERAL) {
             if (is_enum) {
-                uint64_t val = 0;
-                il2cpp_field_static_get_value(field, &val);
-                outPut << " = " << std::dec << val;
+                auto base_type = il2cpp_class_enum_basetype ? il2cpp_class_enum_basetype(klass) : nullptr;
+                int base_type_idx = base_type ? base_type->type : IL2CPP_TYPE_I4;
+                switch (base_type_idx) {
+                    case IL2CPP_TYPE_I1: {
+                        int8_t v = 0;
+                        il2cpp_field_static_get_value(field, &v);
+                        outPut << " = " << (int)v;
+                        break;
+                    }
+                    case IL2CPP_TYPE_U1: {
+                        uint8_t v = 0;
+                        il2cpp_field_static_get_value(field, &v);
+                        outPut << " = " << (unsigned int)v;
+                        break;
+                    }
+                    case IL2CPP_TYPE_I2: {
+                        int16_t v = 0;
+                        il2cpp_field_static_get_value(field, &v);
+                        outPut << " = " << v;
+                        break;
+                    }
+                    case IL2CPP_TYPE_U2: {
+                        uint16_t v = 0;
+                        il2cpp_field_static_get_value(field, &v);
+                        outPut << " = " << v;
+                        break;
+                    }
+                    case IL2CPP_TYPE_I4: {
+                        int32_t v = 0;
+                        il2cpp_field_static_get_value(field, &v);
+                        outPut << " = " << v;
+                        break;
+                    }
+                    case IL2CPP_TYPE_U4: {
+                        uint32_t v = 0;
+                        il2cpp_field_static_get_value(field, &v);
+                        outPut << " = " << v;
+                        break;
+                    }
+                    case IL2CPP_TYPE_I8: {
+                        int64_t v = 0;
+                        il2cpp_field_static_get_value(field, &v);
+                        outPut << " = " << v << "L";
+                        break;
+                    }
+                    case IL2CPP_TYPE_U8: {
+                        uint64_t v = 0;
+                        il2cpp_field_static_get_value(field, &v);
+                        outPut << " = " << v << "UL";
+                        break;
+                    }
+                    default: {
+                        uint64_t v = 0;
+                        il2cpp_field_static_get_value(field, &v);
+                        outPut << " = " << v;
+                        break;
+                    }
+                }
             } else if (il2cpp_field_static_get_value) {
                 switch (field_type->type) {
                     case IL2CPP_TYPE_BOOLEAN: {
@@ -373,13 +448,14 @@ std::string dump_field(Il2CppClass *klass) {
     return outPut.str();
 }
 
-std::string dump_type(const Il2CppType *type) {
-    if (!type) return "";
-    std::stringstream outPut;
-    auto *klass = il2cpp_class_from_type(type);
+std::string dump_type(Il2CppClass *klass, const char *image_name) {
     if (!klass) return "";
+    std::stringstream outPut;
+    if (image_name) {
+        outPut << "\n// Dll : " << image_name << "\n";
+    }
     const char *ns = il2cpp_class_get_namespace(klass);
-    outPut << "\n// Namespace: " << (ns ? ns : "") << "\n";
+    outPut << "// Namespace: " << (ns ? ns : "") << "\n";
     auto flags = il2cpp_class_get_flags(klass);
     if (flags & TYPE_ATTRIBUTE_SERIALIZABLE) {
         outPut << "[Serializable]\n";
@@ -454,6 +530,50 @@ std::string dump_type(const Il2CppType *type) {
     return outPut.str();
 }
 
+static void dump_class_with_nested(
+    Il2CppClass *klass,
+    const char *image_name,
+    std::ofstream &outStream,
+    std::ofstream &scriptStream,
+    bool scriptOpen,
+    bool &firstMethod,
+    std::unordered_set<const Il2CppClass *> &visitedClasses
+) {
+    if (!klass || visitedClasses.count(klass)) return;
+    visitedClasses.insert(klass);
+
+    // Write class definition to dump.cs
+    outStream << dump_type(klass, image_name);
+
+    // Export methods to script.json
+    if (scriptOpen) {
+        void *mIter = nullptr;
+        const char *ns = il2cpp_class_get_namespace(klass);
+        const char *cls = il2cpp_class_get_name(klass);
+        std::string fullCls = (ns && strlen(ns) > 0) ? (std::string(ns) + "." + (cls ? cls : "unknown")) : (cls ? cls : "unknown");
+
+        while (auto method = il2cpp_class_get_methods(klass, &mIter)) {
+            if (method->methodPointer) {
+                uint64_t rva = (uint64_t) method->methodPointer - il2cpp_base;
+                const char *mName = il2cpp_method_get_name(method);
+                if (!firstMethod) scriptStream << ",\n";
+                firstMethod = false;
+                scriptStream << "    {\"Address\": " << rva << ", \"Name\": \""
+                             << json_escape(fullCls.c_str()) << "$$"
+                             << json_escape(mName ? mName : "unknown") << "\"}";
+            }
+        }
+    }
+
+    // Recursively traverse and dump nested types
+    if (il2cpp_class_get_nested_types) {
+        void *nIter = nullptr;
+        while (auto nested = il2cpp_class_get_nested_types(klass, &nIter)) {
+            dump_class_with_nested(nested, image_name, outStream, scriptStream, scriptOpen, firstMethod, visitedClasses);
+        }
+    }
+}
+
 void il2cpp_api_init(void *handle) {
     write_log("[+] Initializing IL2CPP API functions from %p...", handle);
     init_il2cpp_api(handle);
@@ -486,8 +606,10 @@ void il2cpp_api_init(void *handle) {
     }
 
     if (domain) {
-        il2cpp_thread_attach(domain);
-        write_log("[+] Native thread attached to IL2CPP domain successfully");
+        if (il2cpp_thread_attach) {
+            s_attached_thread = il2cpp_thread_attach(domain);
+            write_log("[+] Native thread attached to IL2CPP domain: %p", s_attached_thread);
+        }
     } else {
         std::string err = "Timed out waiting for il2cpp domain (60s)";
         write_log("[-] %s", err.c_str());
@@ -529,7 +651,7 @@ void il2cpp_dump(const char *outDir) {
     auto outPath = filesDir + "/dump.cs";
     auto scriptPath = filesDir + "/script.json";
 
-    write_log("[+] Found %zu assemblies. Opening output streams...", size);
+    write_log("[+] Found %zu assemblies. Opening streaming output files...", size);
 
     LOGI("Streaming dump output directly to %s", outPath.c_str());
     std::ofstream outStream(outPath, std::ios::out | std::ios::trunc);
@@ -545,6 +667,7 @@ void il2cpp_dump(const char *outDir) {
         scriptStream << "{\n  \"ScriptMethod\": [\n";
     }
 
+    // Output all image headers
     for (size_t i = 0; i < size; ++i) {
         auto image = il2cpp_assembly_get_image(assemblies[i]);
         if (image) {
@@ -554,51 +677,36 @@ void il2cpp_dump(const char *outDir) {
     }
     outStream.flush();
 
+    std::unordered_set<const Il2CppClass *> visitedClasses;
+
     if (il2cpp_image_get_class) {
-        LOGI("Dumping assemblies using il2cpp_image_get_class (total %zu assemblies)...", size);
+        LOGI("Dumping all assemblies and nested classes (total %zu assemblies)...", size);
         for (size_t i = 0; i < size; ++i) {
             auto image = il2cpp_assembly_get_image(assemblies[i]);
             if (!image) continue;
             auto image_name = il2cpp_image_get_name(image);
-            outStream << "\n// ===========================================\n";
-            outStream << "// Dll : " << (image_name ? image_name : "unknown") << "\n";
-            outStream << "// ===========================================\n";
 
             auto classCount = il2cpp_image_get_class_count(image);
             for (size_t j = 0; j < classCount; ++j) {
                 auto klass = il2cpp_image_get_class(image, j);
                 if (!klass) continue;
-                auto type = il2cpp_class_get_type(const_cast<Il2CppClass *>(klass));
-                if (!type) continue;
-                outStream << dump_type(type);
-
-                // Export methods to script.json for IDA Pro / Ghidra
-                if (scriptOpen) {
-                    void *mIter = nullptr;
-                    const char *ns = il2cpp_class_get_namespace(const_cast<Il2CppClass *>(klass));
-                    const char *cls = il2cpp_class_get_name(const_cast<Il2CppClass *>(klass));
-                    std::string fullCls = (ns && strlen(ns) > 0) ? (std::string(ns) + "." + (cls ? cls : "unknown")) : (cls ? cls : "unknown");
-
-                    while (auto method = il2cpp_class_get_methods(const_cast<Il2CppClass *>(klass), &mIter)) {
-                        if (method->methodPointer) {
-                            uint64_t rva = (uint64_t) method->methodPointer - il2cpp_base;
-                            const char *mName = il2cpp_method_get_name(method);
-                            if (!firstMethod) scriptStream << ",\n";
-                            firstMethod = false;
-                            scriptStream << "    {\"Address\": " << rva << ", \"Name\": \""
-                                         << json_escape(fullCls.c_str()) << "$$"
-                                         << json_escape(mName ? mName : "unknown") << "\"}";
-                        }
-                    }
-                }
+                dump_class_with_nested(
+                    const_cast<Il2CppClass *>(klass),
+                    image_name,
+                    outStream,
+                    scriptStream,
+                    scriptOpen,
+                    firstMethod,
+                    visitedClasses
+                );
             }
-            outStream.flush(); // Flush regularly to keep RAM minimal and avoid OOM crash
+            outStream.flush();
             if (scriptOpen) scriptStream.flush();
         }
     }
 
     outStream.close();
-    write_log("[+] dump.cs generated successfully at %s", outPath.c_str());
+    write_log("[+] dump.cs generated successfully (%zu unique classes dumped) at %s", visitedClasses.size(), outPath.c_str());
 
     if (scriptOpen) {
         scriptStream << "\n  ],\n  \"ScriptString\": [],\n  \"ScriptMetadata\": [],\n  \"ScriptMetadataMethod\": []\n}\n";
@@ -606,7 +714,14 @@ void il2cpp_dump(const char *outDir) {
         write_log("[+] script.json generated successfully at %s", scriptPath.c_str());
     }
 
-    // Also attempt to copy to /sdcard/Download/ for easy access
+    // Detach current thread cleanly from IL2CPP GC runtime
+    if (il2cpp_thread_detach && s_attached_thread) {
+        il2cpp_thread_detach(s_attached_thread);
+        s_attached_thread = nullptr;
+        write_log("[+] Native thread detached from IL2CPP GC runtime successfully");
+    }
+
+    // Mirror to /sdcard/Download/ for easy user access
     std::string dlPath = "/sdcard/Download/dump.cs";
     std::ifstream src(outPath, std::ios::binary);
     std::ofstream dst(dlPath, std::ios::binary);
