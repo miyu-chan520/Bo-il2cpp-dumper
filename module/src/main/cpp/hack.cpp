@@ -17,6 +17,8 @@
 #include <sys/mman.h>
 #include <linux/unistd.h>
 #include <array>
+#include <vector>
+#include <cinttypes>
 #include <fstream>
 #include <cstdarg>
 #include <mutex>
