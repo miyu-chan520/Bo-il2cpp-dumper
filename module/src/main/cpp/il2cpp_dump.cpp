@@ -1,7 +1,8 @@
 //
 // Modernized IL2CPP Dumper Engine
 // Complete type resolution, recursive nested class discovery, constant literal extraction,
-// streaming output, script.json generation, and clean GC thread lifecycle management.
+// runtime obfuscated string dumping from global-metadata and static fields, streaming output,
+// script.json generation, and clean GC thread lifecycle management.
 //
 
 #include "il2cpp_dump.h"
@@ -32,16 +33,38 @@
 static uint64_t il2cpp_base = 0;
 static Il2CppThread *s_attached_thread = nullptr;
 
-static std::string json_escape(const char *str) {
+struct Il2CppGlobalMetadataHeader {
+    int32_t magic;
+    int32_t version;
+    int32_t stringLiteralOffset;
+    int32_t stringLiteralCount;
+    int32_t stringLiteralDataOffset;
+    int32_t stringLiteralDataCount;
+    int32_t stringOffset;
+    int32_t stringCount;
+};
+
+struct Il2CppStringLiteralEntry {
+    uint32_t length;
+    int32_t dataIndex;
+};
+
+static std::string json_escape(const char *str, size_t len = 0) {
     if (!str) return "";
     std::string out;
-    for (size_t i = 0; str[i]; ++i) {
+    size_t count = len ? len : strlen(str);
+    for (size_t i = 0; i < count; ++i) {
         if (str[i] == '\"') out += "\\\"";
         else if (str[i] == '\\') out += "\\\\";
         else if (str[i] == '\n') out += "\\n";
         else if (str[i] == '\r') out += "\\r";
         else if (str[i] == '\t') out += "\\t";
         else if ((unsigned char)str[i] >= 32 && (unsigned char)str[i] <= 126) out += str[i];
+        else {
+            char ubuf[8];
+            snprintf(ubuf, sizeof(ubuf), "\\u%04x", (unsigned char)str[i]);
+            out += ubuf;
+        }
     }
     return out;
 }
@@ -441,6 +464,29 @@ std::string dump_field(Il2CppClass *klass) {
                         break;
                 }
             }
+        } else if (il2cpp_field_static_get_value && (attrs & FIELD_ATTRIBUTE_STATIC)) {
+            // Also inspect static string fields initialized at runtime
+            if (field_type->type == IL2CPP_TYPE_STRING) {
+                Il2CppString *str = nullptr;
+                il2cpp_field_static_get_value(field, &str);
+                if (str && il2cpp_string_chars && il2cpp_string_length) {
+                    auto chars = il2cpp_string_chars(str);
+                    auto len = il2cpp_string_length(str);
+                    if (len > 0 && len < 2048) {
+                        std::string s;
+                        for (int k = 0; k < len; ++k) {
+                            if (chars[k] == '\"') s += "\\\"";
+                            else if (chars[k] == '\\') s += "\\\\";
+                            else if (chars[k] == '\n') s += "\\n";
+                            else if (chars[k] == '\r') s += "\\r";
+                            else if (chars[k] == '\t') s += "\\t";
+                            else if (chars[k] >= 32 && chars[k] <= 126) s += (char)chars[k];
+                            else s += '?';
+                        }
+                        outPut << " /* runtime value = \"" << s << "\" */";
+                    }
+                }
+            }
         }
 
         outPut << "; // 0x" << std::hex << il2cpp_field_get_offset(field) << "\n";
@@ -574,6 +620,81 @@ static void dump_class_with_nested(
     }
 }
 
+static const Il2CppGlobalMetadataHeader *find_metadata_header() {
+    FILE *maps = fopen("/proc/self/maps", "r");
+    if (!maps) return nullptr;
+    char line[512];
+    const Il2CppGlobalMetadataHeader *found = nullptr;
+    while (fgets(line, sizeof(line), maps)) {
+        uintptr_t start = 0, end = 0;
+        char perms[5] = {0};
+        if (sscanf(line, "%" SCNxPTR "-%" SCNxPTR " %4s", &start, &end, perms) >= 3) {
+            if (perms[0] == 'r' && end > start && (end - start) >= sizeof(Il2CppGlobalMetadataHeader)) {
+                auto hdr = reinterpret_cast<const Il2CppGlobalMetadataHeader *>(start);
+                if (hdr->magic == (int32_t)0xFAB11BAF) {
+                    if (hdr->version >= 16 && hdr->version <= 39 && hdr->stringLiteralCount > 0) {
+                        found = hdr;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    fclose(maps);
+    return found;
+}
+
+static void dump_global_metadata_strings(const std::string &outPath, std::ofstream &scriptStream, bool scriptOpen) {
+    auto header = find_metadata_header();
+    if (!header) {
+        write_log("[-] Decrypted global-metadata.dat not found in memory maps");
+        return;
+    }
+
+    write_log("[+] Found global-metadata in RAM (magic: 0x%x, version: %d, stringLiteralCount: %d)",
+              header->magic, header->version, header->stringLiteralCount);
+
+    const char *meta = reinterpret_cast<const char *>(header);
+    auto entries = reinterpret_cast<const Il2CppStringLiteralEntry *>(meta + header->stringLiteralOffset);
+    const char *stringData = meta + header->stringLiteralDataOffset;
+
+    size_t count = header->stringLiteralCount / sizeof(Il2CppStringLiteralEntry);
+    write_log("[+] Extracting %zu string literals...", count);
+
+    std::ofstream strFile(outPath, std::ios::out | std::ios::trunc);
+    if (strFile.is_open()) {
+        strFile << "[\n";
+    }
+
+    bool firstStr = true;
+    for (size_t i = 0; i < count; ++i) {
+        uint32_t length = entries[i].length;
+        int32_t dataIndex = entries[i].dataIndex;
+        if (dataIndex >= 0 && (dataIndex + length) <= (uint32_t)header->stringLiteralDataCount) {
+            const char *str = stringData + dataIndex;
+            std::string escaped = json_escape(str, length);
+
+            if (strFile.is_open()) {
+                if (!firstStr) strFile << ",\n";
+                strFile << "  {\"Index\": " << i << ", \"Value\": \"" << escaped << "\"}";
+            }
+
+            if (scriptOpen) {
+                if (!firstStr) scriptStream << ",\n";
+                scriptStream << "    {\"Address\": " << i << ", \"Value\": \"" << escaped << "\"}";
+            }
+
+            firstStr = false;
+        }
+    }
+
+    if (strFile.is_open()) {
+        strFile << "\n]\n";
+        strFile.close();
+        write_log("[+] All string literals exported to %s", outPath.c_str());
+    }
+}
+
 void il2cpp_api_init(void *handle) {
     write_log("[+] Initializing IL2CPP API functions from %p...", handle);
     init_il2cpp_api(handle);
@@ -650,6 +771,7 @@ void il2cpp_dump(const char *outDir) {
     mkdir(filesDir.c_str(), 0777);
     auto outPath = filesDir + "/dump.cs";
     auto scriptPath = filesDir + "/script.json";
+    auto strLiteralPath = filesDir + "/stringliteral.json";
 
     write_log("[+] Found %zu assemblies. Opening streaming output files...", size);
 
@@ -708,8 +830,11 @@ void il2cpp_dump(const char *outDir) {
     outStream.close();
     write_log("[+] dump.cs generated successfully (%zu unique classes dumped) at %s", visitedClasses.size(), outPath.c_str());
 
+    // Dump global-metadata strings into ScriptString array in script.json and separate stringliteral.json
     if (scriptOpen) {
-        scriptStream << "\n  ],\n  \"ScriptString\": [],\n  \"ScriptMetadata\": [],\n  \"ScriptMetadataMethod\": []\n}\n";
+        scriptStream << "\n  ],\n  \"ScriptString\": [\n";
+        dump_global_metadata_strings(strLiteralPath, scriptStream, scriptOpen);
+        scriptStream << "\n  ],\n  \"ScriptMetadata\": [],\n  \"ScriptMetadataMethod\": []\n}\n";
         scriptStream.close();
         write_log("[+] script.json generated successfully at %s", scriptPath.c_str());
     }
@@ -738,6 +863,14 @@ void il2cpp_dump(const char *outDir) {
             dstS << srcS.rdbuf();
             write_log("[+] script.json copied to %s", dlScript.c_str());
         }
+    }
+
+    std::string dlStr = "/sdcard/Download/stringliteral.json";
+    std::ifstream srcStr(strLiteralPath, std::ios::binary);
+    std::ofstream dstStr(dlStr, std::ios::binary);
+    if (srcStr.is_open() && dstStr.is_open()) {
+        dstStr << srcStr.rdbuf();
+        write_log("[+] stringliteral.json copied to %s", dlStr.c_str());
     }
 
     write_log("[+] ALL DUMP OPERATIONS COMPLETED SUCCESSFULLY!");
