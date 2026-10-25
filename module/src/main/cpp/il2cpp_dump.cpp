@@ -1,5 +1,6 @@
 //
 // Created by Perfare on 2020/7/4.
+// Modernized with streaming dump, full literal dumping, and safety checks.
 //
 
 #include "il2cpp_dump.h"
@@ -87,6 +88,7 @@ std::string get_method_modifier(uint32_t flags) {
 }
 
 bool _il2cpp_type_is_byref(const Il2CppType *type) {
+    if (!type) return false;
     auto byref = type->byref;
     if (il2cpp_type_is_byref) {
         byref = il2cpp_type_is_byref(type);
@@ -107,6 +109,12 @@ std::string dump_method(Il2CppClass *klass) {
             outPut << std::hex << (uint64_t) method->methodPointer;
         } else {
             outPut << "\t// RVA: 0x VA: 0x0";
+        }
+        if (il2cpp_method_get_token) {
+            auto token = il2cpp_method_get_token(method);
+            if (token) {
+                outPut << " Token: 0x" << std::hex << token;
+            }
         }
         outPut << "\n\t";
         uint32_t iflags = 0;
@@ -243,11 +251,108 @@ std::string dump_field(Il2CppClass *klass) {
         const char *fld_cls_name = field_class ? il2cpp_class_get_name(field_class) : "object";
         const char *fld_name = il2cpp_field_get_name(field);
         outPut << (fld_cls_name ? fld_cls_name : "object") << " " << (fld_name ? fld_name : "unknown_field");
-        if (attrs & FIELD_ATTRIBUTE_LITERAL && is_enum) {
-            uint64_t val = 0;
-            il2cpp_field_static_get_value(field, &val);
-            outPut << " = " << std::dec << val;
+
+        // Dump constant literals (primitives, enums, strings)
+        if (attrs & FIELD_ATTRIBUTE_LITERAL) {
+            if (is_enum) {
+                uint64_t val = 0;
+                il2cpp_field_static_get_value(field, &val);
+                outPut << " = " << std::dec << val;
+            } else if (il2cpp_field_static_get_value) {
+                switch (field_type->type) {
+                    case IL2CPP_TYPE_BOOLEAN: {
+                        bool b = false;
+                        il2cpp_field_static_get_value(field, &b);
+                        outPut << " = " << (b ? "true" : "false");
+                        break;
+                    }
+                    case IL2CPP_TYPE_I1: {
+                        int8_t v = 0;
+                        il2cpp_field_static_get_value(field, &v);
+                        outPut << " = " << (int)v;
+                        break;
+                    }
+                    case IL2CPP_TYPE_U1: {
+                        uint8_t v = 0;
+                        il2cpp_field_static_get_value(field, &v);
+                        outPut << " = " << (int)v;
+                        break;
+                    }
+                    case IL2CPP_TYPE_I2: {
+                        int16_t v = 0;
+                        il2cpp_field_static_get_value(field, &v);
+                        outPut << " = " << v;
+                        break;
+                    }
+                    case IL2CPP_TYPE_U2:
+                    case IL2CPP_TYPE_CHAR: {
+                        uint16_t v = 0;
+                        il2cpp_field_static_get_value(field, &v);
+                        outPut << " = " << v;
+                        break;
+                    }
+                    case IL2CPP_TYPE_I4: {
+                        int32_t v = 0;
+                        il2cpp_field_static_get_value(field, &v);
+                        outPut << " = " << v;
+                        break;
+                    }
+                    case IL2CPP_TYPE_U4: {
+                        uint32_t v = 0;
+                        il2cpp_field_static_get_value(field, &v);
+                        outPut << " = " << v;
+                        break;
+                    }
+                    case IL2CPP_TYPE_I8: {
+                        int64_t v = 0;
+                        il2cpp_field_static_get_value(field, &v);
+                        outPut << " = " << v << "L";
+                        break;
+                    }
+                    case IL2CPP_TYPE_U8: {
+                        uint64_t v = 0;
+                        il2cpp_field_static_get_value(field, &v);
+                        outPut << " = " << v << "UL";
+                        break;
+                    }
+                    case IL2CPP_TYPE_R4: {
+                        float v = 0.0f;
+                        il2cpp_field_static_get_value(field, &v);
+                        outPut << " = " << v << "f";
+                        break;
+                    }
+                    case IL2CPP_TYPE_R8: {
+                        double v = 0.0;
+                        il2cpp_field_static_get_value(field, &v);
+                        outPut << " = " << v;
+                        break;
+                    }
+                    case IL2CPP_TYPE_STRING: {
+                        Il2CppString *str = nullptr;
+                        il2cpp_field_static_get_value(field, &str);
+                        if (str && il2cpp_string_chars && il2cpp_string_length) {
+                            auto chars = il2cpp_string_chars(str);
+                            auto len = il2cpp_string_length(str);
+                            std::string s;
+                            for (int k = 0; k < len; ++k) {
+                                if (chars[k] == '\"') s += "\\\"";
+                                else if (chars[k] == '\\') s += "\\\\";
+                                else if (chars[k] == '\n') s += "\\n";
+                                else if (chars[k] == '\r') s += "\\r";
+                                else if (chars[k] == '\t') s += "\\t";
+                                else if (chars[k] >= 32 && chars[k] <= 126) s += (char)chars[k];
+                                else s += '?';
+                            }
+                            outPut << " = \"" << s << "\"";
+                        }
+                        break;
+                    }
+                    default:
+                        break;
+                }
+            }
         }
+
         outPut << "; // 0x" << std::hex << il2cpp_field_get_offset(field) << "\n";
     }
     return outPut.str();
@@ -477,4 +582,13 @@ void il2cpp_dump(const char *outDir) {
 
     outStream.close();
     LOGI("IL2CPP dump done successfully at %s!", outPath.c_str());
+
+    // Also attempt to copy to /sdcard/Download/dump.cs if accessible
+    std::string dlPath = "/sdcard/Download/dump.cs";
+    std::ifstream src(outPath, std::ios::binary);
+    std::ofstream dst(dlPath, std::ios::binary);
+    if (src.is_open() && dst.is_open()) {
+        dst << src.rdbuf();
+        LOGI("Dump also copied to %s", dlPath.c_str());
+    }
 }
