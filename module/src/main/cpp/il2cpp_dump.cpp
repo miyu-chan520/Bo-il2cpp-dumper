@@ -11,6 +11,10 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unordered_set>
+#include <link.h>
+#include <elf.h>
+#include <map>
+#include <iomanip>
 #include "hack.h"
 #include "xdl.h"
 #include "log.h"
@@ -726,8 +730,261 @@ void il2cpp_api_init(void *handle) {
     }
 }
 
+struct NativeExportContext {
+    std::ofstream *stream;
+    size_t count;
+};
+
+static int phdr_dump_callback(struct dl_phdr_info *info, size_t size, void *data) {
+    auto ctx = static_cast<NativeExportContext *>(data);
+    if (!info || !info->dlpi_name || !ctx->stream) return 0;
+
+    const char *path = info->dlpi_name;
+    if (strlen(path) == 0) return 0;
+
+    const char *baseName = strrchr(path, '/');
+    baseName = baseName ? (baseName + 1) : path;
+
+    bool isTarget = (strstr(baseName, "anogs") != nullptr ||
+                     strstr(baseName, "il2cpp") != nullptr ||
+                     strstr(baseName, "unity") != nullptr ||
+                     strstr(baseName, "main") != nullptr ||
+                     strstr(baseName, "Game") != nullptr);
+    if (!isTarget && strstr(path, "/data/app/") == nullptr) {
+        return 0;
+    }
+
+    ElfW(Addr) load_bias = info->dlpi_addr;
+    const ElfW(Phdr) *phdr = info->dlpi_phdr;
+    ElfW(Half) phnum = info->dlpi_phnum;
+
+    const ElfW(Dyn) *dyn = nullptr;
+    for (ElfW(Half) i = 0; i < phnum; ++i) {
+        if (phdr[i].p_type == PT_DYNAMIC) {
+            dyn = reinterpret_cast<const ElfW(Dyn) *>(load_bias + phdr[i].p_vaddr);
+            break;
+        }
+    }
+    if (!dyn) return 0;
+
+    const ElfW(Sym) *symtab = nullptr;
+    const char *strtab = nullptr;
+    size_t nchain = 0;
+
+    for (const ElfW(Dyn) *d = dyn; d->d_tag != DT_NULL; ++d) {
+        if (d->d_tag == DT_SYMTAB) {
+            symtab = reinterpret_cast<const ElfW(Sym) *>(load_bias + d->d_un.d_ptr);
+        } else if (d->d_tag == DT_STRTAB) {
+            strtab = reinterpret_cast<const char *>(load_bias + d->d_un.d_ptr);
+        } else if (d->d_tag == DT_HASH) {
+            auto hash = reinterpret_cast<const uint32_t *>(load_bias + d->d_un.d_ptr);
+            if (hash) {
+                nchain = hash[1];
+            }
+        } else if (d->d_tag == DT_GNU_HASH) {
+            auto gnu_hash = reinterpret_cast<const uint32_t *>(load_bias + d->d_un.d_ptr);
+            if (gnu_hash) {
+                uint32_t nbuckets = gnu_hash[0];
+                uint32_t symoffset = gnu_hash[1];
+                uint32_t bloom_size = gnu_hash[2];
+                const uint32_t *buckets = &gnu_hash[4 + (sizeof(void *) / 4) * bloom_size];
+                const uint32_t *chains = &buckets[nbuckets];
+
+                uint32_t max_sym = symoffset;
+                for (uint32_t b = 0; b < nbuckets; ++b) {
+                    uint32_t sym_idx = buckets[b];
+                    if (sym_idx >= symoffset) {
+                        while (true) {
+                            if (sym_idx > max_sym) max_sym = sym_idx;
+                            uint32_t chain_val = chains[sym_idx - symoffset];
+                            if (chain_val & 1) break;
+                            sym_idx++;
+                        }
+                    }
+                }
+                if (max_sym + 1 > nchain) {
+                    nchain = max_sym + 1;
+                }
+            }
+        }
+    }
+
+    if (!symtab || !strtab || nchain == 0) return 0;
+
+    *ctx->stream << "\n// ============================================================================\n";
+    *ctx->stream << "// Module: " << baseName << " | Base: 0x" << std::hex << load_bias << "\n";
+    *ctx->stream << "// Path: " << path << "\n";
+    *ctx->stream << "// ============================================================================\n";
+
+    bool isAnogs = (strstr(baseName, "anogs") != nullptr);
+
+    for (size_t i = 1; i < nchain; ++i) {
+        const auto &sym = symtab[i];
+        if (sym.st_name != 0 && sym.st_value != 0 && sym.st_shndx != SHN_UNDEF) {
+            const char *symName = strtab + sym.st_name;
+            uint64_t rva = sym.st_value;
+            uint64_t va = load_bias + sym.st_value;
+
+            if (isAnogs) {
+                *ctx->stream << "ANOGS_" << symName << " = 0x" << std::hex << rva << "; // VA: 0x" << va << "\n";
+            } else {
+                *ctx->stream << "[" << baseName << "] " << symName << " = 0x" << std::hex << rva << "; // VA: 0x" << va << "\n";
+            }
+            ctx->count++;
+        }
+    }
+    ctx->stream->flush();
+    return 0;
+}
+
+static void dump_native_exports(const std::string &outPath) {
+    write_log("[+] Extracting native export symbols from loaded modules...");
+    std::ofstream expStream(outPath, std::ios::out | std::ios::trunc);
+    if (!expStream.is_open()) {
+        write_log("[-] Failed to open %s for writing native exports", outPath.c_str());
+        return;
+    }
+
+    std::vector<char> expBuf(65536);
+    expStream.rdbuf()->pubsetbuf(expBuf.data(), expBuf.size());
+
+    expStream << "// ============================================================================\n";
+    expStream << "// Native ELF Export Symbols & Dynamic Functions\n";
+    expStream << "// Generated by Zygisk-Il2CppDumper\n";
+    expStream << "// ============================================================================\n";
+
+    NativeExportContext ctx{&expStream, 0};
+    xdl_iterate_phdr(phdr_dump_callback, &ctx, XDL_DEFAULT);
+
+    expStream.close();
+    write_log("[+] Native export symbols dump completed (%zu symbols exported) to %s", ctx.count, outPath.c_str());
+}
+
+static void generate_offsets_header(const std::string &outPath) {
+    write_log("[+] Generating C++ offsets header at %s...", outPath.c_str());
+    std::ofstream offStream(outPath, std::ios::out | std::ios::trunc);
+    if (!offStream.is_open()) {
+        write_log("[-] Failed to open %s for writing offsets header", outPath.c_str());
+        return;
+    }
+
+    std::vector<char> offBuf(65536);
+    offStream.rdbuf()->pubsetbuf(offBuf.data(), offBuf.size());
+
+    offStream << "#ifndef OFFSETS_H\n";
+    offStream << "#define OFFSETS_H\n\n";
+    offStream << "#include <cstdint>\n\n";
+    offStream << "// ============================================================================\n";
+    offStream << "// Unity IL2CPP Runtime Offsets\n";
+    offStream << "// Base RVA relative to libil2cpp.so (0x" << std::hex << il2cpp_base << ")\n";
+    offStream << "// ============================================================================\n\n";
+    offStream << "namespace Offsets {\n\n";
+
+    offStream << "    // ========================================================================\n";
+    offStream << "    // BASE CHAIN (GameFacade -> BaseGame -> Match)\n";
+    offStream << "    // ========================================================================\n";
+    offStream << "    constexpr uintptr_t GameFacade             = 0xA72E4E0; // GameFacade static class cell\n";
+    offStream << "    constexpr uintptr_t GameFacade_P2          = 0xB8;      // static_fields pointer (arm64)\n";
+    offStream << "    constexpr uintptr_t BaseGame_Match         = 0x90;      // BaseGame.m_Match pointer\n";
+    offStream << "    constexpr uintptr_t BaseGame_Timer         = 0x20;      // BaseGame.m_SimulationTimer\n";
+    offStream << "    constexpr uintptr_t Timer_Delta            = 0x2C;      // TimerService.m_FixedDeltaTime\n";
+    offStream << "    constexpr uintptr_t MatchIsRunning         = 0xCC;      // Match.LOEPAKMFNJO (bool)\n";
+    offStream << "    constexpr uintptr_t Match_PlayerDict       = 0xC0;      // Match.m_ReplicationEntitis (Dictionary)\n";
+    offStream << "    constexpr uintptr_t Match_LocalPlayer      = 0xD8;      // Match.MHJCLOPOBAA (LocalPlayer)\n\n";
+
+    offStream << "    // ========================================================================\n";
+    offStream << "    // MONO DICTIONARY (IL2CPP Dictionary<byte, Player>)\n";
+    offStream << "    // ========================================================================\n";
+    offStream << "    constexpr uintptr_t Dict_Entries           = 0x18;      // Dictionary._entries array\n";
+    offStream << "    constexpr uintptr_t Dict_Count             = 0x20;      // Dictionary._count (int32)\n";
+    offStream << "    constexpr uintptr_t Dict_ArrayHeader       = 0x20;      // Array elements offset\n";
+    offStream << "    constexpr uintptr_t Dict_EntryStride       = 0x18;      // Size of each entry struct\n";
+    offStream << "    constexpr uintptr_t Dict_EntryValue        = 0x10;      // Entry.value pointer\n\n";
+
+    offStream << "    // ========================================================================\n";
+    offStream << "    // PLAYER ENTITY (Player / ReplicationEntity)\n";
+    offStream << "    // ========================================================================\n";
+    offStream << "    constexpr uintptr_t Player_Rotation        = 0x614;     // Player.AKKPEKIHGAH (Quaternion)\n";
+    offStream << "    constexpr uintptr_t Player_HeadTF          = 0x6A0;     // ITransformNode Bone_Head\n";
+    offStream << "    constexpr uintptr_t Player_FootTF          = 0x6E8;     // ITransformNode Bone_LeftToe\n";
+    offStream << "    constexpr uintptr_t Player_Camera          = 0x690;     // Player.AHNCPOJPPCL (FollowCamera)\n";
+    offStream << "    constexpr uintptr_t Player_IsFiring        = 0x848;     // Player.m_IsFiring (bool)\n";
+    offStream << "    constexpr uintptr_t Player_HP              = 0x70;      // ReplicationEntity.m_PRIDataPool (HP pool)\n";
+    offStream << "    constexpr uintptr_t Player_Armor           = 0x74;      // Player armor value (int32)\n";
+    offStream << "    constexpr uintptr_t Player_IsDead          = 0x7C;      // AttackableEntity.CGJLEBOGBNP (bool)\n";
+    offStream << "    constexpr uintptr_t Player_Avatar          = 0x770;     // Player.GGJOLDEEIEN (AvatarManager)\n";
+    offStream << "    constexpr uintptr_t Player_HeadCollider    = 0x738;     // Player.BANPEGJEAKE (HeadCollider)\n";
+    offStream << "    constexpr uintptr_t Player_IsBot           = 0x4A0;     // Player.IsClientBot (bool)\n";
+    offStream << "    constexpr uintptr_t Player_Name            = 0x490;     // Player.BDHGDLFDHAL (String)\n";
+    offStream << "    constexpr uintptr_t Player_AimInfo         = 0xE50;     // Player.FDMIEDDNCEC (AimInfo)\n";
+    offStream << "    constexpr uintptr_t Player_Velocity        = 0xF0;      // CharacterController.velocity (Vector3)\n";
+    offStream << "    constexpr uintptr_t Player_IsGrounded      = 0x11C;     // CharacterController.isGrounded (bool)\n";
+    offStream << "    constexpr uintptr_t Player_Weapon          = 0x600;     // Player.ActiveUISightingWeapon\n\n";
+
+    offStream << "    // ========================================================================\n";
+    offStream << "    // BONES (ITransformNode Node Transforms)\n";
+    offStream << "    // ========================================================================\n";
+    offStream << "    constexpr uintptr_t Bone_Head              = 0x6A0;     // Head bone transform\n";
+    offStream << "    constexpr uintptr_t Bone_Hip               = 0x6A8;     // Hip bone transform\n";
+    offStream << "    constexpr uintptr_t Bone_Breast            = 0x6B0;     // Chest / Breast bone transform\n";
+    offStream << "    constexpr uintptr_t Bone_Root              = 0x6C8;     // Root node transform\n";
+    offStream << "    constexpr uintptr_t Bone_LeftShoulder      = 0x708;     // Left shoulder transform\n";
+    offStream << "    constexpr uintptr_t Bone_RightShoulder     = 0x710;     // Right shoulder transform\n";
+    offStream << "    constexpr uintptr_t Bone_LeftAnkle         = 0x6D8;     // Left ankle transform\n";
+    offStream << "    constexpr uintptr_t Bone_RightAnkle        = 0x6E0;     // Right ankle transform\n";
+    offStream << "    constexpr uintptr_t Bone_LeftToe           = 0x6E8;     // Left toe transform\n";
+    offStream << "    constexpr uintptr_t Bone_RightToe          = 0x6F0;     // Right toe transform\n";
+    offStream << "    constexpr uintptr_t Bone_LeftForeArm       = 0x730;     // Left forearm transform\n";
+    offStream << "    constexpr uintptr_t Bone_RightForeArm      = 0x728;     // Right forearm transform\n";
+    offStream << "    constexpr uintptr_t Bone_LeftHand          = 0x720;     // Left hand transform\n";
+    offStream << "    constexpr uintptr_t Bone_RightHand         = 0x718;     // Right hand transform\n\n";
+
+    offStream << "    // ========================================================================\n";
+    offStream << "    // CAMERA CHAIN & MATRIX\n";
+    offStream << "    // ========================================================================\n";
+    offStream << "    constexpr uintptr_t Camera_Follow          = 0x28;      // FollowCamera.m_Camera\n";
+    offStream << "    constexpr uintptr_t Camera_IntPtr          = 0x10;      // Camera.m_CachedPtr (Native Camera)\n";
+    offStream << "    constexpr uintptr_t Camera_Matrix          = 0x100;     // Camera viewMatrix (4x4 matrix)\n\n";
+
+    offStream << "    // ========================================================================\n";
+    offStream << "    // WEAPON & RECOIL\n";
+    offStream << "    // ========================================================================\n";
+    offStream << "    constexpr uintptr_t Weapon_Data            = 0x80;      // Weapon.BDKDBILOMDE (WeaponData)\n";
+    offStream << "    constexpr uintptr_t Weapon_Recoil          = 0x18;      // WeaponData.LLFOLBGHAJB (Recoil)\n\n";
+
+    offStream << "    // ========================================================================\n";
+    offStream << "    // DAMAGE INFO (HNLIMBLIANL)\n";
+    offStream << "    // ========================================================================\n";
+    offStream << "    constexpr uintptr_t DmgInfo_Damage         = 0x10;      // Damage value (int32)\n";
+    offStream << "    constexpr uintptr_t DmgInfo_DamageType     = 0x14;      // Damage type (int32)\n";
+    offStream << "    constexpr uintptr_t DmgInfo_Damager        = 0x28;      // Damager entity pointer\n";
+    offStream << "    constexpr uintptr_t DmgInfo_HitLocation    = 0x4C;      // Hit location (Vector3)\n";
+    offStream << "    constexpr uintptr_t DmgInfo_HitNormal      = 0x58;      // Hit normal (Vector3)\n";
+    offStream << "    constexpr uintptr_t DmgInfo_RayDir         = 0x64;      // Ray direction (Vector3)\n";
+    offStream << "    constexpr uintptr_t DmgInfo_HitGroup       = 0x70;      // Hit group (short: 1=head, 2=body)\n\n";
+
+    offStream << "    // ========================================================================\n";
+    offStream << "    // CRITICAL METHOD RVAS\n";
+    offStream << "    // ========================================================================\n";
+    offStream << "    constexpr uintptr_t Player_TakeDamage_9    = 0x6F91500; // Player.TakeDamage (9 params)\n";
+    offStream << "    constexpr uintptr_t Player_TakeDamage_4    = 0x6F913B4; // Player.TakeDamage (4 params)\n";
+    offStream << "    constexpr uintptr_t Player_get_HeadCollider = 0x6F2ACB0; // Player.get_HeadCollider\n";
+    offStream << "    constexpr uintptr_t Player_GetHeadTF       = 0x6FAE37C; // Player.GetHeadTF\n";
+    offStream << "    constexpr uintptr_t Player_GetHipTF        = 0x6FAE508; // Player.GetHipTF\n";
+    offStream << "    constexpr uintptr_t Player_GetHeuristicTarget = 0x6F8E764; // Player.GetHeuristicTarget\n";
+    offStream << "    constexpr uintptr_t Player_UpdateAiming     = 0x6F8EE08; // Player.UpdateAiming\n";
+    offStream << "    constexpr uintptr_t Player_StartFiring      = 0x6F988AC; // Player.StartFiring\n";
+    offStream << "    constexpr uintptr_t Component_get_gameObject = 0x9FD760C; // Component.get_gameObject\n\n";
+
+    offStream << "} // namespace Offsets\n\n";
+    offStream << "#endif // OFFSETS_H\n";
+
+    offStream.close();
+    write_log("[+] offsets.h generated successfully at %s", outPath.c_str());
+}
+
 void il2cpp_dump(const char *outDir) {
-    write_log("[+] Starting IL2CPP dump for %s...", outDir);
+    write_log("[+] Starting automated IL2CPP dump for %s...", outDir);
     show_toast("[Il2CppDumper] Dumping in progress, please wait...");
 
     if (!il2cpp_domain_get || !il2cpp_domain_get_assemblies) {
@@ -764,23 +1021,30 @@ void il2cpp_dump(const char *outDir) {
     auto outPath = boDir + "/dump.cs";
     auto scriptPath = boDir + "/script.json";
     auto strLiteralPath = boDir + "/stringliteral.json";
+    auto offsetPath = boDir + "/offsets.h";
+    auto nativeExpPath = boDir + "/native_exports.txt";
 
-    write_log("[+] Found %zu assemblies. Opening streaming output files in %s...", size, boDir.c_str());
+    write_log("[+] Found %zu assemblies. Opening streaming buffered output files in %s...", size, boDir.c_str());
 
-    LOGI("Streaming dump output directly to %s", outPath.c_str());
+    std::vector<char> outBuf(65536);
     std::ofstream outStream(outPath, std::ios::out | std::ios::trunc);
     if (!outStream.is_open()) {
         LOGE("Failed to open %s for writing!", outPath.c_str());
         return;
     }
+    outStream.rdbuf()->pubsetbuf(outBuf.data(), outBuf.size());
 
+    std::vector<char> scriptBuf(65536);
     std::ofstream scriptStream(scriptPath, std::ios::out | std::ios::trunc);
     bool scriptOpen = scriptStream.is_open();
-    bool firstMethod = true;
     if (scriptOpen) {
+        scriptStream.rdbuf()->pubsetbuf(scriptBuf.data(), scriptBuf.size());
         scriptStream << "{\n  \"ScriptMethod\": [\n";
     }
 
+    bool firstMethod = true;
+
+    // Output all image headers
     for (size_t i = 0; i < size; ++i) {
         auto image = il2cpp_assembly_get_image(assemblies[i]);
         if (image) {
@@ -829,6 +1093,12 @@ void il2cpp_dump(const char *outDir) {
         write_log("[+] script.json generated successfully at %s", scriptPath.c_str());
     }
 
+    // Generate offsets.h header
+    generate_offsets_header(offsetPath);
+
+    // Generate native export symbols (including libanogs.so, libil2cpp.so, libunity.so)
+    dump_native_exports(nativeExpPath);
+
     write_log("[+] ALL DUMP OPERATIONS COMPLETED SUCCESSFULLY!");
-    show_toast("[Il2CppDumper] SUCCESS! Saved to /sdcard/Bo_dump/");
+    show_toast("[Il2CppDumper] SUCCESS! All dumps saved to /sdcard/Bo_dump/");
 }

@@ -68,13 +68,42 @@ private:
 
         bool match = false;
         if (package_name) {
-            if (strcmp(package_name, GamePackageName) == 0) {
+            // Default targets
+            if (strcmp(package_name, "com.dts.freefireth") == 0 ||
+                strcmp(package_name, "com.dts.freefiremax") == 0 ||
+                strcmp(package_name, "com.dts.freefirevn") == 0 ||
+                strcmp(package_name, "com.dts.freefire") == 0) {
                 match = true;
             } else {
+                // System property override
                 char prop[PROP_VALUE_MAX] = {0};
                 __system_property_get("persist.il2cppdumper.package", prop);
                 if (strlen(prop) > 0 && strcmp(package_name, prop) == 0) {
                     match = true;
+                }
+            }
+
+            // Target package override from file
+            if (!match) {
+                FILE *tf = fopen("/sdcard/Bo_dump/target.txt", "r");
+                if (!tf) tf = fopen("/data/local/tmp/il2cpp_target.txt", "r");
+                if (tf) {
+                    char tbuf[256] = {0};
+                    if (fgets(tbuf, sizeof(tbuf), tf)) {
+                        char *p = tbuf;
+                        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+                        char *end = p + strlen(p) - 1;
+                        while (end >= p && (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n')) {
+                            *end = '\0';
+                            end--;
+                        }
+                        if (strlen(p) > 0) {
+                            if (strcmp(p, "*") == 0 || strcmp(package_name, p) == 0) {
+                                match = true;
+                            }
+                        }
+                    }
+                    fclose(tf);
                 }
             }
         }

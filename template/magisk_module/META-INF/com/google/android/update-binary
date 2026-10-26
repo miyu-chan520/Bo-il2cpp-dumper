@@ -37,9 +37,4 @@ fi
 
 install_module
 
-# Ensure action script is executable
-if [ -f "$MODPATH/action.sh" ]; then
-  chmod 755 "$MODPATH/action.sh"
-fi
-
 exit 0
