@@ -578,6 +578,8 @@ static void dump_class_with_nested(
     std::ofstream &outStream,
     std::ofstream &scriptStream,
     bool scriptOpen,
+    std::ofstream &offsetStream,
+    bool offsetOpen,
     bool &firstMethod,
     std::unordered_set<const Il2CppClass *> &visitedClasses
 ) {
@@ -586,12 +588,40 @@ static void dump_class_with_nested(
 
     outStream << dump_type(klass, image_name);
 
+    const char *ns = il2cpp_class_get_namespace(klass);
+    const char *cls = il2cpp_class_get_name(klass);
+    std::string fullCls = (ns && strlen(ns) > 0) ? (std::string(ns) + "." + (cls ? cls : "unknown")) : (cls ? cls : "unknown");
+
+    if (offsetOpen) {
+        // Dynamic field offset extraction (independent of updates)
+        void *fIter = nullptr;
+        while (auto field = il2cpp_class_get_fields(klass, &fIter)) {
+            const char *fName = il2cpp_field_get_name(field);
+            auto field_type = il2cpp_field_get_type(field);
+            std::string fType = get_type_name(field_type);
+            size_t fOff = il2cpp_field_get_offset ? il2cpp_field_get_offset(field) : 0;
+            offsetStream << fullCls << "::" << (fName ? fName : "unknown")
+                         << " = 0x" << std::hex << fOff << "; // " << fType << "\n";
+        }
+
+        // Dynamic method RVA extraction (independent of updates)
+        void *mIterOff = nullptr;
+        while (auto method = il2cpp_class_get_methods(klass, &mIterOff)) {
+            if (method->methodPointer) {
+                uint64_t rva = (uint64_t) method->methodPointer - il2cpp_base;
+                uint64_t va = (uint64_t) method->methodPointer;
+                const char *mName = il2cpp_method_get_name(method);
+                auto return_type = il2cpp_method_get_return_type(method);
+                std::string ret_name = get_type_name(return_type);
+                offsetStream << fullCls << "$$" << (mName ? mName : "unknown")
+                             << " = 0x" << std::hex << rva << "; // VA: 0x" << va
+                             << " | " << ret_name << " " << (mName ? mName : "unknown") << "()\n";
+            }
+        }
+    }
+
     if (scriptOpen) {
         void *mIter = nullptr;
-        const char *ns = il2cpp_class_get_namespace(klass);
-        const char *cls = il2cpp_class_get_name(klass);
-        std::string fullCls = (ns && strlen(ns) > 0) ? (std::string(ns) + "." + (cls ? cls : "unknown")) : (cls ? cls : "unknown");
-
         while (auto method = il2cpp_class_get_methods(klass, &mIter)) {
             if (method->methodPointer) {
                 uint64_t rva = (uint64_t) method->methodPointer - il2cpp_base;
@@ -608,7 +638,7 @@ static void dump_class_with_nested(
     if (il2cpp_class_get_nested_types) {
         void *nIter = nullptr;
         while (auto nested = il2cpp_class_get_nested_types(klass, &nIter)) {
-            dump_class_with_nested(nested, image_name, outStream, scriptStream, scriptOpen, firstMethod, visitedClasses);
+            dump_class_with_nested(nested, image_name, outStream, scriptStream, scriptOpen, offsetStream, offsetOpen, firstMethod, visitedClasses);
         }
     }
 }
@@ -860,129 +890,6 @@ static void dump_native_exports(const std::string &outPath) {
     write_log("[+] Native export symbols dump completed (%zu symbols exported) to %s", ctx.count, outPath.c_str());
 }
 
-static void generate_offsets_header(const std::string &outPath) {
-    write_log("[+] Generating C++ offsets header at %s...", outPath.c_str());
-    std::ofstream offStream(outPath, std::ios::out | std::ios::trunc);
-    if (!offStream.is_open()) {
-        write_log("[-] Failed to open %s for writing offsets header", outPath.c_str());
-        return;
-    }
-
-    std::vector<char> offBuf(65536);
-    offStream.rdbuf()->pubsetbuf(offBuf.data(), offBuf.size());
-
-    offStream << "#ifndef OFFSETS_H\n";
-    offStream << "#define OFFSETS_H\n\n";
-    offStream << "#include <cstdint>\n\n";
-    offStream << "// ============================================================================\n";
-    offStream << "// Unity IL2CPP Runtime Offsets\n";
-    offStream << "// Base RVA relative to libil2cpp.so (0x" << std::hex << il2cpp_base << ")\n";
-    offStream << "// ============================================================================\n\n";
-    offStream << "namespace Offsets {\n\n";
-
-    offStream << "    // ========================================================================\n";
-    offStream << "    // BASE CHAIN (GameFacade -> BaseGame -> Match)\n";
-    offStream << "    // ========================================================================\n";
-    offStream << "    constexpr uintptr_t GameFacade             = 0xA72E4E0; // GameFacade static class cell\n";
-    offStream << "    constexpr uintptr_t GameFacade_P2          = 0xB8;      // static_fields pointer (arm64)\n";
-    offStream << "    constexpr uintptr_t BaseGame_Match         = 0x90;      // BaseGame.m_Match pointer\n";
-    offStream << "    constexpr uintptr_t BaseGame_Timer         = 0x20;      // BaseGame.m_SimulationTimer\n";
-    offStream << "    constexpr uintptr_t Timer_Delta            = 0x2C;      // TimerService.m_FixedDeltaTime\n";
-    offStream << "    constexpr uintptr_t MatchIsRunning         = 0xCC;      // Match.LOEPAKMFNJO (bool)\n";
-    offStream << "    constexpr uintptr_t Match_PlayerDict       = 0xC0;      // Match.m_ReplicationEntitis (Dictionary)\n";
-    offStream << "    constexpr uintptr_t Match_LocalPlayer      = 0xD8;      // Match.MHJCLOPOBAA (LocalPlayer)\n\n";
-
-    offStream << "    // ========================================================================\n";
-    offStream << "    // MONO DICTIONARY (IL2CPP Dictionary<byte, Player>)\n";
-    offStream << "    // ========================================================================\n";
-    offStream << "    constexpr uintptr_t Dict_Entries           = 0x18;      // Dictionary._entries array\n";
-    offStream << "    constexpr uintptr_t Dict_Count             = 0x20;      // Dictionary._count (int32)\n";
-    offStream << "    constexpr uintptr_t Dict_ArrayHeader       = 0x20;      // Array elements offset\n";
-    offStream << "    constexpr uintptr_t Dict_EntryStride       = 0x18;      // Size of each entry struct\n";
-    offStream << "    constexpr uintptr_t Dict_EntryValue        = 0x10;      // Entry.value pointer\n\n";
-
-    offStream << "    // ========================================================================\n";
-    offStream << "    // PLAYER ENTITY (Player / ReplicationEntity)\n";
-    offStream << "    // ========================================================================\n";
-    offStream << "    constexpr uintptr_t Player_Rotation        = 0x614;     // Player.AKKPEKIHGAH (Quaternion)\n";
-    offStream << "    constexpr uintptr_t Player_HeadTF          = 0x6A0;     // ITransformNode Bone_Head\n";
-    offStream << "    constexpr uintptr_t Player_FootTF          = 0x6E8;     // ITransformNode Bone_LeftToe\n";
-    offStream << "    constexpr uintptr_t Player_Camera          = 0x690;     // Player.AHNCPOJPPCL (FollowCamera)\n";
-    offStream << "    constexpr uintptr_t Player_IsFiring        = 0x848;     // Player.m_IsFiring (bool)\n";
-    offStream << "    constexpr uintptr_t Player_HP              = 0x70;      // ReplicationEntity.m_PRIDataPool (HP pool)\n";
-    offStream << "    constexpr uintptr_t Player_Armor           = 0x74;      // Player armor value (int32)\n";
-    offStream << "    constexpr uintptr_t Player_IsDead          = 0x7C;      // AttackableEntity.CGJLEBOGBNP (bool)\n";
-    offStream << "    constexpr uintptr_t Player_Avatar          = 0x770;     // Player.GGJOLDEEIEN (AvatarManager)\n";
-    offStream << "    constexpr uintptr_t Player_HeadCollider    = 0x738;     // Player.BANPEGJEAKE (HeadCollider)\n";
-    offStream << "    constexpr uintptr_t Player_IsBot           = 0x4A0;     // Player.IsClientBot (bool)\n";
-    offStream << "    constexpr uintptr_t Player_Name            = 0x490;     // Player.BDHGDLFDHAL (String)\n";
-    offStream << "    constexpr uintptr_t Player_AimInfo         = 0xE50;     // Player.FDMIEDDNCEC (AimInfo)\n";
-    offStream << "    constexpr uintptr_t Player_Velocity        = 0xF0;      // CharacterController.velocity (Vector3)\n";
-    offStream << "    constexpr uintptr_t Player_IsGrounded      = 0x11C;     // CharacterController.isGrounded (bool)\n";
-    offStream << "    constexpr uintptr_t Player_Weapon          = 0x600;     // Player.ActiveUISightingWeapon\n\n";
-
-    offStream << "    // ========================================================================\n";
-    offStream << "    // BONES (ITransformNode Node Transforms)\n";
-    offStream << "    // ========================================================================\n";
-    offStream << "    constexpr uintptr_t Bone_Head              = 0x6A0;     // Head bone transform\n";
-    offStream << "    constexpr uintptr_t Bone_Hip               = 0x6A8;     // Hip bone transform\n";
-    offStream << "    constexpr uintptr_t Bone_Breast            = 0x6B0;     // Chest / Breast bone transform\n";
-    offStream << "    constexpr uintptr_t Bone_Root              = 0x6C8;     // Root node transform\n";
-    offStream << "    constexpr uintptr_t Bone_LeftShoulder      = 0x708;     // Left shoulder transform\n";
-    offStream << "    constexpr uintptr_t Bone_RightShoulder     = 0x710;     // Right shoulder transform\n";
-    offStream << "    constexpr uintptr_t Bone_LeftAnkle         = 0x6D8;     // Left ankle transform\n";
-    offStream << "    constexpr uintptr_t Bone_RightAnkle        = 0x6E0;     // Right ankle transform\n";
-    offStream << "    constexpr uintptr_t Bone_LeftToe           = 0x6E8;     // Left toe transform\n";
-    offStream << "    constexpr uintptr_t Bone_RightToe          = 0x6F0;     // Right toe transform\n";
-    offStream << "    constexpr uintptr_t Bone_LeftForeArm       = 0x730;     // Left forearm transform\n";
-    offStream << "    constexpr uintptr_t Bone_RightForeArm      = 0x728;     // Right forearm transform\n";
-    offStream << "    constexpr uintptr_t Bone_LeftHand          = 0x720;     // Left hand transform\n";
-    offStream << "    constexpr uintptr_t Bone_RightHand         = 0x718;     // Right hand transform\n\n";
-
-    offStream << "    // ========================================================================\n";
-    offStream << "    // CAMERA CHAIN & MATRIX\n";
-    offStream << "    // ========================================================================\n";
-    offStream << "    constexpr uintptr_t Camera_Follow          = 0x28;      // FollowCamera.m_Camera\n";
-    offStream << "    constexpr uintptr_t Camera_IntPtr          = 0x10;      // Camera.m_CachedPtr (Native Camera)\n";
-    offStream << "    constexpr uintptr_t Camera_Matrix          = 0x100;     // Camera viewMatrix (4x4 matrix)\n\n";
-
-    offStream << "    // ========================================================================\n";
-    offStream << "    // WEAPON & RECOIL\n";
-    offStream << "    // ========================================================================\n";
-    offStream << "    constexpr uintptr_t Weapon_Data            = 0x80;      // Weapon.BDKDBILOMDE (WeaponData)\n";
-    offStream << "    constexpr uintptr_t Weapon_Recoil          = 0x18;      // WeaponData.LLFOLBGHAJB (Recoil)\n\n";
-
-    offStream << "    // ========================================================================\n";
-    offStream << "    // DAMAGE INFO (HNLIMBLIANL)\n";
-    offStream << "    // ========================================================================\n";
-    offStream << "    constexpr uintptr_t DmgInfo_Damage         = 0x10;      // Damage value (int32)\n";
-    offStream << "    constexpr uintptr_t DmgInfo_DamageType     = 0x14;      // Damage type (int32)\n";
-    offStream << "    constexpr uintptr_t DmgInfo_Damager        = 0x28;      // Damager entity pointer\n";
-    offStream << "    constexpr uintptr_t DmgInfo_HitLocation    = 0x4C;      // Hit location (Vector3)\n";
-    offStream << "    constexpr uintptr_t DmgInfo_HitNormal      = 0x58;      // Hit normal (Vector3)\n";
-    offStream << "    constexpr uintptr_t DmgInfo_RayDir         = 0x64;      // Ray direction (Vector3)\n";
-    offStream << "    constexpr uintptr_t DmgInfo_HitGroup       = 0x70;      // Hit group (short: 1=head, 2=body)\n\n";
-
-    offStream << "    // ========================================================================\n";
-    offStream << "    // CRITICAL METHOD RVAS\n";
-    offStream << "    // ========================================================================\n";
-    offStream << "    constexpr uintptr_t Player_TakeDamage_9    = 0x6F91500; // Player.TakeDamage (9 params)\n";
-    offStream << "    constexpr uintptr_t Player_TakeDamage_4    = 0x6F913B4; // Player.TakeDamage (4 params)\n";
-    offStream << "    constexpr uintptr_t Player_get_HeadCollider = 0x6F2ACB0; // Player.get_HeadCollider\n";
-    offStream << "    constexpr uintptr_t Player_GetHeadTF       = 0x6FAE37C; // Player.GetHeadTF\n";
-    offStream << "    constexpr uintptr_t Player_GetHipTF        = 0x6FAE508; // Player.GetHipTF\n";
-    offStream << "    constexpr uintptr_t Player_GetHeuristicTarget = 0x6F8E764; // Player.GetHeuristicTarget\n";
-    offStream << "    constexpr uintptr_t Player_UpdateAiming     = 0x6F8EE08; // Player.UpdateAiming\n";
-    offStream << "    constexpr uintptr_t Player_StartFiring      = 0x6F988AC; // Player.StartFiring\n";
-    offStream << "    constexpr uintptr_t Component_get_gameObject = 0x9FD760C; // Component.get_gameObject\n\n";
-
-    offStream << "} // namespace Offsets\n\n";
-    offStream << "#endif // OFFSETS_H\n";
-
-    offStream.close();
-    write_log("[+] offsets.h generated successfully at %s", outPath.c_str());
-}
-
 void il2cpp_dump(const char *outDir) {
     write_log("[+] Starting automated IL2CPP dump for %s...", outDir);
     show_toast("[Il2CppDumper] Dumping in progress, please wait...");
@@ -1021,7 +928,7 @@ void il2cpp_dump(const char *outDir) {
     auto outPath = boDir + "/dump.cs";
     auto scriptPath = boDir + "/script.json";
     auto strLiteralPath = boDir + "/stringliteral.json";
-    auto offsetPath = boDir + "/offsets.h";
+    auto offsetPath = boDir + "/offset.txt";
     auto nativeExpPath = boDir + "/native_exports.txt";
 
     write_log("[+] Found %zu assemblies. Opening streaming buffered output files in %s...", size, boDir.c_str());
@@ -1040,6 +947,20 @@ void il2cpp_dump(const char *outDir) {
     if (scriptOpen) {
         scriptStream.rdbuf()->pubsetbuf(scriptBuf.data(), scriptBuf.size());
         scriptStream << "{\n  \"ScriptMethod\": [\n";
+    }
+
+    std::vector<char> offsetBuf(65536);
+    std::ofstream offsetStream(offsetPath, std::ios::out | std::ios::trunc);
+    bool offsetOpen = offsetStream.is_open();
+    if (offsetOpen) {
+        offsetStream.rdbuf()->pubsetbuf(offsetBuf.data(), offsetBuf.size());
+        offsetStream << "// ============================================================================\n";
+        offsetStream << "// IL2CPP Dynamic Runtime Offsets & RVAs (Auto-scanned from memory)\n";
+        offsetStream << "// Base: 0x" << std::hex << il2cpp_base << "\n";
+        offsetStream << "// Format:\n";
+        offsetStream << "//   Namespace.Class::FieldName = 0x<offset>; // FieldType\n";
+        offsetStream << "//   Namespace.Class$$MethodName = 0x<RVA>; // VA: 0x<VA> | ReturnType MethodName()\n";
+        offsetStream << "// ============================================================================\n\n";
     }
 
     bool firstMethod = true;
@@ -1073,12 +994,15 @@ void il2cpp_dump(const char *outDir) {
                     outStream,
                     scriptStream,
                     scriptOpen,
+                    offsetStream,
+                    offsetOpen,
                     firstMethod,
                     visitedClasses
                 );
             }
             outStream.flush();
             if (scriptOpen) scriptStream.flush();
+            if (offsetOpen) offsetStream.flush();
         }
     }
 
@@ -1093,8 +1017,10 @@ void il2cpp_dump(const char *outDir) {
         write_log("[+] script.json generated successfully at %s", scriptPath.c_str());
     }
 
-    // Generate offsets.h header
-    generate_offsets_header(offsetPath);
+    if (offsetOpen) {
+        offsetStream.close();
+        write_log("[+] offset.txt generated successfully at %s", offsetPath.c_str());
+    }
 
     // Generate native export symbols (including libanogs.so, libil2cpp.so, libunity.so)
     dump_native_exports(nativeExpPath);
