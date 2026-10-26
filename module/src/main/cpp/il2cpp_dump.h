@@ -7,6 +7,6 @@
 
 void il2cpp_api_init(void *handle);
 
-void il2cpp_dump(const char *outDir);
+void il2cpp_dump(const char *pkg_name);
 
 #endif //ZYGISK_IL2CPPDUMPER_IL2CPP_DUMP_H

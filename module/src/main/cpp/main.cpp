@@ -33,7 +33,7 @@ public:
 
     void postAppSpecialize(const AppSpecializeArgs *) override {
         if (enable_hack) {
-            std::thread hack_thread(hack_prepare, game_data_dir, data, length);
+            std::thread hack_thread(hack_prepare, pkg_name, game_data_dir, data, length);
             hack_thread.detach();
         }
     }
@@ -42,15 +42,12 @@ private:
     Api *api;
     JNIEnv *env;
     bool enable_hack;
+    char *pkg_name;
     char *game_data_dir;
     void *data;
     size_t length;
 
     bool is_dumper_enabled() {
-        // Master switch: check file flag or system property
-        if (access("/data/local/tmp/il2cppdumper_disabled", F_OK) == 0) {
-            return false;
-        }
         char prop[PROP_VALUE_MAX] = {0};
         __system_property_get("persist.il2cppdumper.enabled", prop);
         if (strlen(prop) > 0 && strcmp(prop, "0") == 0) {
@@ -61,55 +58,59 @@ private:
 
     void preSpecialize(const char *package_name, const char *app_data_dir) {
         if (!is_dumper_enabled()) {
-            LOGI("Zygisk-Il2CppDumper is globally DISABLED by user switch");
+            LOGI("Zygisk-Il2CppDumper is globally DISABLED via property persist.il2cppdumper.enabled=0");
+            api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
+            return;
+        }
+
+        if (!package_name || strlen(package_name) == 0) {
             api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
             return;
         }
 
         bool match = false;
-        if (package_name) {
-            // Default targets
-            if (strcmp(package_name, "com.dts.freefireth") == 0 ||
-                strcmp(package_name, "com.dts.freefiremax") == 0 ||
-                strcmp(package_name, "com.dts.freefirevn") == 0 ||
-                strcmp(package_name, "com.dts.freefire") == 0) {
-                match = true;
-            } else {
-                // System property override
-                char prop[PROP_VALUE_MAX] = {0};
-                __system_property_get("persist.il2cppdumper.package", prop);
-                if (strlen(prop) > 0 && strcmp(package_name, prop) == 0) {
-                    match = true;
-                }
-            }
-
-            // Target package override from file
-            if (!match) {
-                FILE *tf = fopen("/sdcard/Bo_dump/target.txt", "r");
-                if (!tf) tf = fopen("/data/local/tmp/il2cpp_target.txt", "r");
-                if (tf) {
-                    char tbuf[256] = {0};
-                    if (fgets(tbuf, sizeof(tbuf), tf)) {
-                        char *p = tbuf;
-                        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
-                        char *end = p + strlen(p) - 1;
-                        while (end >= p && (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n')) {
-                            *end = '\0';
-                            end--;
-                        }
-                        if (strlen(p) > 0) {
-                            if (strcmp(p, "*") == 0 || strcmp(package_name, p) == 0) {
-                                match = true;
-                            }
-                        }
-                    }
-                    fclose(tf);
-                }
-            }
+        // Default target
+        if (strcmp(package_name, "com.dts.freefireth") == 0) {
+            match = true;
         }
+
+        mkdir("/sdcard/Bo_dump", 0777);
+
+        // Multi-line package list from /sdcard/Bo_dump/target.txt
+        FILE *tf = fopen("/sdcard/Bo_dump/target.txt", "r");
+        if (!tf) {
+            // Auto-create default target.txt
+            FILE *defF = fopen("/sdcard/Bo_dump/target.txt", "w");
+            if (defF) {
+                fputs("# Target packages to dump (one package per line)\n", defF);
+                fputs("# Enter '*' to dump any Unity game\n", defF);
+                fputs("com.dts.freefireth\n", defF);
+                fclose(defF);
+            }
+        } else {
+            char lineBuf[256];
+            while (fgets(lineBuf, sizeof(lineBuf), tf)) {
+                char *p = lineBuf;
+                while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+                if (*p == '\0' || *p == '#') continue;
+                char *end = p + strlen(p) - 1;
+                while (end >= p && (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n')) {
+                    *end = '\0';
+                    end--;
+                }
+                if (strcmp(p, "*") == 0 || strcmp(package_name, p) == 0) {
+                    match = true;
+                    break;
+                }
+            }
+            fclose(tf);
+        }
+
         if (match) {
             LOGI("detect game: %s", package_name);
             enable_hack = true;
+            pkg_name = new char[strlen(package_name) + 1];
+            strcpy(pkg_name, package_name);
             game_data_dir = new char[strlen(app_data_dir) + 1];
             strcpy(game_data_dir, app_data_dir);
 

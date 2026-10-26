@@ -49,6 +49,12 @@ afterEvaluate {
             into magiskDir
             from(templatePath) {
                 exclude 'module.prop'
+                exclude 'action.sh'
+            }
+            from(templatePath) {
+                include 'action.sh'
+                filter(FixCrLfFilter.class,
+                        eol: FixCrLfFilter.CrLf.newInstance("lf"))
             }
             from(templatePath) {
                 include 'module.prop'

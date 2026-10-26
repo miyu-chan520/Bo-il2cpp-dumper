@@ -161,9 +161,9 @@ void hide_self_from_maps() {
     }
 }
 
-void hack_start(const char *game_data_dir) {
+void hack_start(const char *pkg_name, const char *game_data_dir) {
     pthread_setname_np(pthread_self(), "UnityGfxDevice");
-    write_log("[+] Zygisk-Il2CppDumper attached. Data dir: %s", game_data_dir);
+    write_log("[+] Zygisk-Il2CppDumper attached. Package: %s, Data dir: %s", pkg_name ? pkg_name : "unknown", game_data_dir ? game_data_dir : "unknown");
 
     // Hide our module mappings from /proc/self/maps to bypass anti-cheat scanners
     hide_self_from_maps();
@@ -183,7 +183,7 @@ void hack_start(const char *game_data_dir) {
             sleep(10);
 
             il2cpp_api_init(handle);
-            il2cpp_dump("/sdcard/Bo_dump");
+            il2cpp_dump(pkg_name);
 
             // DO NOT call xdl_close(handle) to prevent game crash
             write_log("[+] Dump finished. Keeping thread dormant to preserve game stability.");
@@ -278,7 +278,7 @@ struct NativeBridgeCallbacks {
     void *(*loadLibraryExt)(const char *libpath, int flag, void *ns);
 };
 
-bool NativeBridgeLoad(const char *game_data_dir, int api_level, void *data, size_t length) {
+bool NativeBridgeLoad(const char *pkg_name, const char *game_data_dir, int api_level, void *data, size_t length) {
     sleep(5);
 
     auto libart = dlopen("libart.so", RTLD_NOW);
@@ -352,16 +352,16 @@ bool NativeBridgeLoad(const char *game_data_dir, int api_level, void *data, size
     return false;
 }
 
-void hack_prepare(const char *game_data_dir, void *data, size_t length) {
+void hack_prepare(const char *pkg_name, const char *game_data_dir, void *data, size_t length) {
     pthread_setname_np(pthread_self(), "JobWorker 0");
     LOGI("hack thread: %d", gettid());
     int api_level = android_get_device_api_level();
     LOGI("api level: %d", api_level);
 
 #if defined(__i386__) || defined(__x86_64__)
-    if (!NativeBridgeLoad(game_data_dir, api_level, data, length)) {
+    if (!NativeBridgeLoad(pkg_name, game_data_dir, api_level, data, length)) {
 #endif
-        hack_start(game_data_dir);
+        hack_start(pkg_name, game_data_dir);
 #if defined(__i386__) || defined(__x86_64__)
     }
 #endif
@@ -371,7 +371,7 @@ void hack_prepare(const char *game_data_dir, void *data, size_t length) {
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     auto game_data_dir = (const char *) reserved;
-    std::thread hack_thread(hack_start, game_data_dir);
+    std::thread hack_thread(hack_start, "com.dts.freefireth", game_data_dir);
     hack_thread.detach();
     return JNI_VERSION_1_6;
 }
