@@ -115,59 +115,15 @@ void show_toast(const std::string &message) {
 }
 
 void hide_self_from_maps() {
-    Dl_info info;
-    if (!dladdr((void*)hide_self_from_maps, &info) || !info.dli_fname) return;
-    std::string my_path = info.dli_fname;
-
-    FILE *fp = fopen("/proc/self/maps", "r");
-    if (!fp) return;
-
-    struct MapSeg {
-        uintptr_t start;
-        uintptr_t end;
-        int prot;
-    };
-    std::vector<MapSeg> segs;
-    char line[512];
-    while (fgets(line, sizeof(line), fp)) {
-        if (strstr(line, my_path.c_str()) || strstr(line, "zygisk_il2cppdumper")) {
-            uintptr_t start = 0, end = 0;
-            char perms[5] = {0};
-            if (sscanf(line, "%" SCNxPTR "-%" SCNxPTR " %4s", &start, &end, perms) >= 3) {
-                int prot = 0;
-                if (perms[0] == 'r') prot |= PROT_READ;
-                if (perms[1] == 'w') prot |= PROT_WRITE;
-                if (perms[2] == 'x') prot |= PROT_EXEC;
-                segs.push_back({start, end, prot});
-            }
-        }
-    }
-    fclose(fp);
-
-    for (const auto &seg : segs) {
-        size_t len = seg.end - seg.start;
-        void *backup = malloc(len);
-        if (!backup) continue;
-        memcpy(backup, (void*)seg.start, len);
-
-        // Replace file-backed mapping with anonymous memory
-        void *anon = mmap((void*)seg.start, len, PROT_READ | PROT_WRITE,
-                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
-        if (anon != MAP_FAILED) {
-            memcpy((void*)seg.start, backup, len);
-            mprotect((void*)seg.start, len, seg.prot);
-        }
-        free(backup);
-    }
+    // No-op: removing dangerous anonymous memory remapping that violates W^X and causes SIGSEGV on modern kernels
 }
 
 void hack_start(const char *pkg_name, const char *game_data_dir) {
     pthread_setname_np(pthread_self(), "UnityGfxDevice");
-    write_log("[+] Zygisk-Il2CppDumper attached. Package: %s, Data dir: %s", pkg_name ? pkg_name : "unknown", game_data_dir ? game_data_dir : "unknown");
+    std::string pkg = (pkg_name && strlen(pkg_name) > 0) ? pkg_name : "com.dts.freefireth";
+    write_log("[+] Zygisk-Il2CppDumper attached. Package: %s, Data dir: %s", pkg.c_str(), game_data_dir ? game_data_dir : "unknown");
 
-    // Hide our module mappings from /proc/self/maps to bypass anti-cheat scanners
-    hide_self_from_maps();
-    write_log("[+] Self-hiding completed: module mappings converted to anonymous memory");
+    show_toast("[Il2CppDumper] Attached to " + pkg + "! Waiting for libil2cpp.so...");
 
     write_log("[+] Waiting for libil2cpp.so to load...");
 
@@ -178,12 +134,11 @@ void hack_start(const char *pkg_name, const char *game_data_dir) {
             load = true;
             write_log("[+] Found libil2cpp.so: %p (waited %d seconds)", handle, i);
 
-            // Wait 10 seconds for UnityMain to finish il2cpp_init and stabilize Boehm GC
-            write_log("[+] Waiting 10 seconds for Unity engine and GC initialization to complete...");
-            sleep(10);
+            show_toast("[Il2CppDumper] Found libil2cpp.so! Dumping in 5s...");
+            sleep(5);
 
             il2cpp_api_init(handle);
-            il2cpp_dump(pkg_name);
+            il2cpp_dump(pkg.c_str(), game_data_dir);
 
             // DO NOT call xdl_close(handle) to prevent game crash
             write_log("[+] Dump finished. Keeping thread dormant to preserve game stability.");

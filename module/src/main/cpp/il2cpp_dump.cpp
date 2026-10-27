@@ -894,7 +894,7 @@ static void dump_native_exports(const std::string &outPath) {
     write_log("[+] Native export symbols dump completed (%zu symbols exported) to %s", ctx.count, outPath.c_str());
 }
 
-void il2cpp_dump(const char *pkg_name) {
+void il2cpp_dump(const char *pkg_name, const char *game_data_dir) {
     std::string pkg = (pkg_name && strlen(pkg_name) > 0) ? pkg_name : "com.dts.freefireth";
     write_log("[+] Starting automated IL2CPP dump for %s...", pkg.c_str());
     show_toast(std::string("[Il2CppDumper] Dumping ") + pkg + ", please wait...");
@@ -928,12 +928,42 @@ void il2cpp_dump(const char *pkg_name) {
         return;
     }
 
-    std::string boBase = "/sdcard/Bo_dump";
-    mkdir(boBase.c_str(), 0777);
+    // Multi-candidate directory detection to guarantee write success on all Android versions
+    std::vector<std::string> candidateDirs = {
+        "/sdcard/Bo_dump/" + pkg,
+        "/data/media/0/Bo_dump/" + pkg,
+        "/sdcard/Android/data/" + pkg + "/files/Bo_dump",
+        std::string(game_data_dir ? game_data_dir : "/data/data/" + pkg) + "/files/Bo_dump"
+    };
 
-    std::string boDir = boBase + "/" + pkg;
+    std::string boDir = "";
+    for (const auto &cand : candidateDirs) {
+        size_t lastSlash = cand.rfind('/');
+        if (lastSlash != std::string::npos) {
+            std::string parent = cand.substr(0, lastSlash);
+            mkdir(parent.c_str(), 0777);
+        }
+        mkdir(cand.c_str(), 0777);
 
-    // Clean previous dump directory for this package so every dump is fresh
+        std::string testFile = cand + "/.test_write";
+        FILE *tf = fopen(testFile.c_str(), "w");
+        if (tf) {
+            fclose(tf);
+            unlink(testFile.c_str());
+            boDir = cand;
+            write_log("[+] Selected output directory: %s", boDir.c_str());
+            break;
+        }
+    }
+
+    if (boDir.empty()) {
+        std::string err = "All output directories failed to write (storage permission denied)";
+        write_log("[-] %s", err.c_str());
+        show_toast(std::string("[Il2CppDumper] FAIL: ") + err);
+        return;
+    }
+
+    // Clean previous dump files in this directory so every dump session is fresh
     DIR *dir = opendir(boDir.c_str());
     if (dir) {
         struct dirent *entry;
@@ -943,9 +973,7 @@ void il2cpp_dump(const char *pkg_name) {
             unlink(filePath.c_str());
         }
         closedir(dir);
-        rmdir(boDir.c_str());
     }
-    mkdir(boDir.c_str(), 0777);
 
     auto outPath = boDir + "/dump.cs";
     auto scriptPath = boDir + "/script.json";
@@ -1048,6 +1076,6 @@ void il2cpp_dump(const char *pkg_name) {
     // Generate native export symbols (including libanogs.so, libil2cpp.so, libunity.so)
     dump_native_exports(nativeExpPath);
 
-    write_log("[+] ALL DUMP OPERATIONS COMPLETED SUCCESSFULLY FOR %s!", pkg.c_str());
-    show_toast(std::string("[Il2CppDumper] SUCCESS! Saved to /sdcard/Bo_dump/") + pkg + "/");
+    write_log("[+] ALL DUMP OPERATIONS COMPLETED SUCCESSFULLY FOR %s AT %s!", pkg.c_str(), boDir.c_str());
+    show_toast(std::string("[Il2CppDumper] SUCCESS! Saved to ") + boDir);
 }

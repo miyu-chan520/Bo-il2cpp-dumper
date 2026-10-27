@@ -10,7 +10,7 @@
 #include <string>
 
 void hack_prepare(const char *pkg_name, const char *game_data_dir, void *data, size_t length);
-void hide_self_from_maps();
+void hack_start(const char *pkg_name, const char *game_data_dir);
 void show_toast(const std::string &message);
 void init_log(const char *game_data_dir);
 void write_log(const char *fmt, ...);

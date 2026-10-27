@@ -50,9 +50,13 @@ afterEvaluate {
             from(templatePath) {
                 exclude 'module.prop'
                 exclude 'action.sh'
+                exclude 'customize.sh'
+                exclude 'service.sh'
             }
             from(templatePath) {
                 include 'action.sh'
+                include 'customize.sh'
+                include 'service.sh'
                 filter(FixCrLfFilter.class,
                         eol: FixCrLfFilter.CrLf.newInstance("lf"))
             }

@@ -21,10 +21,10 @@ Extracts metadata structures, C# dummy classes, decrypted string literals, dynam
    - Dumps each game into its own dedicated subfolder to avoid clutter when dumping multiple games.
    - **Auto-wipe on launch**: Every time a target game starts, any previous dump folder for that package is automatically cleaned, ensuring each session produces a 100% fresh dump.
 4. **Action Button Toggle (Magisk / KernelSU / APatch)**:
-   - Includes a built-in root manager Action button.
+   - Includes a built-in root manager Action button (`action.sh`).
    - Tap once: Turn ON dumper.
    - Tap again: Turn OFF dumper.
-   - State is stored in Android system properties (`persist.il2cppdumper.enabled`) rather than temporary files, persisting across reboots.
+   - State is cleanly stored inside `/data/adb/modules/zygisk_il2cppdumper/disable`, persisting across reboots without polluting temporary directories or requiring SELinux property overrides.
 5. **Zero OOM / 64KB Buffered Streaming**:
    - Flushes output in 64KB I/O chunks (`pubsetbuf`) directly to storage, preventing Out-Of-Memory crashes on massive games.
 
@@ -86,16 +86,19 @@ echo "com.your.game" > /sdcard/Bo_dump/target.txt
    - Tap again: Toggles **OFF** (`DISABLED`).
 
 ### Method 2: ADB / Shell Command
-You can also toggle or inspect the state via ADB:
+You can also toggle or inspect the state via ADB or Termux:
 ```bash
-# Check current status (1 = enabled, 0 = disabled)
-adb shell getprop persist.il2cppdumper.enabled
+# Check current status
+adb shell su -c "[ -f /data/adb/modules/zygisk_il2cppdumper/disable ] && echo 'DISABLED' || echo 'ENABLED'"
 
 # Enable dumper
-adb shell su -c "setprop persist.il2cppdumper.enabled 1"
+adb shell su -c "rm -f /data/adb/modules/zygisk_il2cppdumper/disable"
 
 # Disable dumper
-adb shell su -c "setprop persist.il2cppdumper.enabled 0"
+adb shell su -c "touch /data/adb/modules/zygisk_il2cppdumper/disable"
+
+# Or execute action.sh directly
+adb shell su -c "/data/adb/modules/zygisk_il2cppdumper/action.sh"
 ```
 
 ---
