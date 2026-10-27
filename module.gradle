@@ -3,7 +3,7 @@ ext {
     magiskModuleId = "zygisk_il2cppdumper"
     moduleName = "Il2CppDumper"
     moduleAuthor = "Perfare & Miyu"
-    moduleDescription = "Automated runtime IL2CPP & ELF Dumper. Generates dump.cs, script.json, stringliteral.json, offset.txt, and native_exports.txt into /sdcard/Bo_dump/<package>/ with Action toggle."
-    moduleVersion = "v3.1.0"
-    moduleVersionCode = 310
+    moduleDescription = "Automated runtime IL2CPP & ELF Dumper with WebUI & Action Toggle. Generates dump.cs, script.json, stringliteral.json, offset.txt, and native_exports.txt (Anogs exports, constructors, signatures) into /sdcard/Bo_dump/<package>/."
+    moduleVersion = "v3.2.0"
+    moduleVersionCode = 320
 }

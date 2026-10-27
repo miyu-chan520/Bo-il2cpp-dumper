@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Zygisk-Il2CppDumper Pro</title>
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --card-bg: rgba(18, 24, 38, 0.85);
+      --card-border: rgba(0, 230, 118, 0.25);
+      --text: #f0f6fc;
+      --text-muted: #8b949e;
+      --accent: #00e676;
+      --accent-glow: rgba(0, 230, 118, 0.4);
+      --cyan: #00e5ff;
+      --cyan-glow: rgba(0, 229, 255, 0.35);
+      --danger: #ff1744;
+      --danger-glow: rgba(255, 23, 68, 0.4);
+      --font-mono: "SF Mono", Monaco, Consolas, "Liberation Mono", Menlo, Courier, monospace;
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    body {
+      margin: 0;
+      padding: 14px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+      background: var(--bg);
+      background-image: radial-gradient(circle at top right, rgba(0, 229, 255, 0.08), transparent 45%),
+                        radial-gradient(circle at bottom left, rgba(0, 230, 118, 0.08), transparent 45%);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .title-group h1 {
+      margin: 0;
+      font-size: 19px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      background: linear-gradient(135deg, #00e676, #00e5ff);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .title-group p {
+      margin: 2px 0 0;
+      font-size: 10px;
+      color: var(--text-muted);
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+    .badge {
+      font-size: 11px;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s ease;
+    }
+    .badge-on { background: rgba(0, 230, 118, 0.15); color: var(--accent); border: 1px solid var(--accent); box-shadow: 0 0 10px var(--accent-glow); }
+    .badge-off { background: rgba(255, 23, 68, 0.15); color: var(--danger); border: 1px solid var(--danger); box-shadow: 0 0 10px var(--danger-glow); }
+    .badge-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 14px;
+      padding: 14px;
+      margin-bottom: 12px;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+    }
+    .card-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--cyan);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .switch-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .switch-desc {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+    .toggle-btn {
+      padding: 9px 18px;
+      border-radius: 10px;
+      border: none;
+      font-weight: 700;
+      font-size: 13px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s ease;
+    }
+    .toggle-active {
+      background: linear-gradient(135deg, #00e676, #00b0ff);
+      color: #031207;
+      box-shadow: 0 0 14px var(--accent-glow);
+    }
+    .toggle-inactive {
+      background: #1c2128;
+      color: var(--danger);
+      border: 1px solid rgba(255, 23, 68, 0.3);
+    }
+
+    textarea, input[type="text"] {
+      width: 100%;
+      background: #0d1117;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 13px;
+      color: #fff;
+      font-family: var(--font-mono);
+      outline: none;
+      transition: border 0.2s;
+    }
+    textarea:focus, input[type="text"]:focus {
+      border-color: var(--cyan);
+      box-shadow: 0 0 8px var(--cyan-glow);
+    }
+    textarea {
+      resize: vertical;
+      min-height: 80px;
+      line-height: 1.4;
+    }
+
+    .presets {
+      display: flex;
+      gap: 6px;
+      margin: 8px 0;
+      flex-wrap: wrap;
+    }
+    .chip {
+      background: #161b22;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 8px;
+      padding: 5px 10px;
+      font-size: 11px;
+      color: #c9d1d9;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .chip:active {
+      background: var(--accent);
+      color: #000;
+    }
+
+    .btn {
+      width: 100%;
+      padding: 11px;
+      border-radius: 10px;
+      border: none;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: all 0.15s ease;
+      margin-top: 8px;
+    }
+    .btn:active { transform: scale(0.98); }
+    .btn-primary {
+      background: linear-gradient(135deg, #00e676, #00b0ff);
+      color: #031207;
+      box-shadow: 0 4px 14px var(--accent-glow);
+    }
+    .btn-secondary {
+      background: #21262d;
+      color: #f0f6fc;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .btn-danger {
+      background: rgba(255, 23, 68, 0.15);
+      color: var(--danger);
+      border: 1px solid var(--danger);
+    }
+
+    .row-btn {
+      display: flex;
+      gap: 8px;
+    }
+    .row-btn .btn {
+      flex: 1;
+    }
+
+    .terminal {
+      background: #070a10;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: #39ff14;
+      max-height: 220px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+      line-height: 1.45;
+    }
+
+    .search-bar {
+      margin-top: 8px;
+      margin-bottom: 8px;
+    }
+    .info-tag {
+      font-size: 10px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div class="title-group">
+      <h1>Zygisk-Il2CppDumper</h1>
+      <p>Dynamic Runtime Engine v3.2.0</p>
+    </div>
+    <div id="statusBadge" class="badge badge-on">
+      <span class="badge-dot"></span>
+      <span id="statusBadgeText">ACTIVE</span>
+    </div>
+  </div>
+
+  <!-- Master Switch Card -->
+  <div class="card">
+    <div class="card-title">
+      <span>Trạng Thái Hoạt Động</span>
+      <span style="font-size: 10px; color: var(--text-muted);">Root Switch</span>
+    </div>
+    <div class="switch-row">
+      <div>
+        <div style="font-size: 13px; font-weight: 700;">Công tắc Master</div>
+        <div class="switch-desc">Lưu trong /data/adb/modules/zygisk_il2cppdumper/disable</div>
+      </div>
+      <button id="toggleMasterBtn" class="toggle-btn toggle-active" onclick="toggleMasterSwitch()">
+        <span id="toggleMasterText">BẬT</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Target Packages Card -->
+  <div class="card">
+    <div class="card-title">
+      <span>Danh Sách Gói Dump (target.txt)</span>
+      <span class="info-tag">Mỗi gói 1 dòng</span>
+    </div>
+    <textarea id="targetInput" placeholder="com.dts.freefireth&#10;com.dts.freefiremax&#10;*"></textarea>
+    
+    <div class="presets">
+      <span class="chip" onclick="addPreset('com.dts.freefireth')">+ Free Fire TH</span>
+      <span class="chip" onclick="addPreset('com.dts.freefiremax')">+ Free Fire MAX</span>
+      <span class="chip" onclick="addPreset('com.dts.freefirevn')">+ Free Fire VN</span>
+      <span class="chip" onclick="addPreset('*')">+ Tất cả Game (*)</span>
+    </div>
+
+    <button class="btn btn-primary" onclick="saveTargets()">
+      💾 Lưu Cấu Hình Gói Target
+    </button>
+  </div>
+
+  <!-- Dump Files Explorer Card -->
+  <div class="card">
+    <div class="card-title">
+      <span>Quản Lý Dữ Liệu Dump</span>
+      <span class="info-tag">/sdcard/Bo_dump/</span>
+    </div>
+
+    <div class="row-btn">
+      <button class="btn btn-secondary" onclick="checkDumpFiles()">📂 Quét Thư Mục Dump</button>
+      <button class="btn btn-secondary" onclick="viewOffsets()">🔍 Xem Offset</button>
+      <button class="btn btn-secondary" onclick="viewNativeExports()">⚡ Anogs / Native</button>
+    </div>
+
+    <div class="search-bar">
+      <input type="text" id="filterInput" placeholder="Tìm kiếm hàm / offset / symbol (Ctrl+F nhanh)..." onkeyup="filterTerminal()">
+    </div>
+
+    <div id="output" class="terminal">[Sẵn sàng] Đang tải thông tin hệ thống...</div>
+
+    <div class="row-btn" style="margin-top: 8px;">
+      <button class="btn btn-secondary" onclick="triggerActionScript()">⚡ Chạy Action Script</button>
+      <button class="btn btn-danger" onclick="cleanDumps()">🗑️ Dọn Dữ Liệu Cũ</button>
+    </div>
+  </div>
+
+  <script>
+    let isEnabled = true;
+    let fullOutputText = "";
+
+    function printLog(msg) {
+      fullOutputText = msg;
+      document.getElementById('output').innerText = msg;
+    }
+
+    // Universal exec bridge supporting KernelSU, APatch, and modern JS bridges
+    function exec(cmd) {
+      return new Promise((resolve) => {
+        try {
+          if (window.ksu && window.ksu.exec) {
+            const res = window.ksu.exec(cmd);
+            if (res instanceof Promise) {
+              res.then((out) => {
+                if (typeof out === 'string') {
+                  try { resolve(JSON.parse(out)); } catch(e) { resolve({ errno: 0, stdout: out, stderr: '' }); }
+                } else {
+                  resolve(out || { errno: 0, stdout: '', stderr: '' });
+                }
+              }).catch((err) => resolve({ errno: -1, stdout: '', stderr: String(err) }));
+              return;
+            }
+            if (typeof res === 'string') {
+              try { resolve(JSON.parse(res)); return; } catch(e) { resolve({ errno: 0, stdout: res, stderr: '' }); return; }
+            }
+            if (typeof res === 'object' && res !== null) {
+              resolve(res);
+              return;
+            }
+            window.ksu.exec(cmd, (errno, stdout, stderr) => {
+              resolve({ errno, stdout, stderr });
+            });
+            return;
+          }
+          resolve({ errno: -1, stdout: '', stderr: 'Không tìm thấy API Root Manager (vui lòng mở bên trong KernelSU hoặc APatch)' });
+        } catch (e) {
+          resolve({ errno: -1, stdout: '', stderr: String(e) });
+        }
+      });
+    }
+
+    async function init() {
+      // 1. Check Master Switch
+      const chk = await exec('sh -c "if [ -f /data/adb/modules/zygisk_il2cppdumper/disable ]; then echo 0; else echo 1; fi"');
+      if (chk.stdout && chk.stdout.trim() === '0') {
+        setSwitchUI(false);
+      } else {
+        setSwitchUI(true);
+      }
+
+      // 2. Read Target List from /data/media/0/Bo_dump/target.txt or module dir
+      const resTgt = await exec('sh -c "if [ -f /data/media/0/Bo_dump/target.txt ]; then cat /data/media/0/Bo_dump/target.txt; elif [ -f /sdcard/Bo_dump/target.txt ]; then cat /sdcard/Bo_dump/target.txt; else cat /data/adb/modules/zygisk_il2cppdumper/target.txt 2>/dev/null; fi"');
+      if (resTgt.stdout && resTgt.stdout.trim()) {
+        document.getElementById('targetInput').value = resTgt.stdout.trim();
+        printLog('[Khởi động] Đã nạp danh sách target:\n' + resTgt.stdout.trim());
+      } else {
+        const def = "com.dts.freefireth\ncom.dts.freefiremax";
+        document.getElementById('targetInput').value = def;
+        printLog('[Khởi động] Dùng danh sách mặc định:\n' + def);
+      }
+    }
+
+    function setSwitchUI(enabled) {
+      isEnabled = enabled;
+      const badge = document.getElementById('statusBadge');
+      const badgeText = document.getElementById('statusBadgeText');
+      const toggleBtn = document.getElementById('toggleMasterBtn');
+      const toggleText = document.getElementById('toggleMasterText');
+
+      if (enabled) {
+        badge.className = 'badge badge-on';
+        badgeText.innerText = 'ACTIVE';
+        toggleBtn.className = 'toggle-btn toggle-active';
+        toggleText.innerText = 'BẬT';
+      } else {
+        badge.className = 'badge badge-off';
+        badgeText.innerText = 'DISABLED';
+        toggleBtn.className = 'toggle-btn toggle-inactive';
+        toggleText.innerText = 'TẮT';
+      }
+    }
+
+    async function toggleMasterSwitch() {
+      if (isEnabled) {
+        await exec('touch /data/adb/modules/zygisk_il2cppdumper/disable');
+        setSwitchUI(false);
+        printLog('[Công tắc Master] ĐÃ TẮT. Game sẽ chạy bình thường không hook hay dump.');
+      } else {
+        await exec('rm -f /data/adb/modules/zygisk_il2cppdumper/disable');
+        setSwitchUI(true);
+        printLog('[Công tắc Master] ĐÃ BẬT. Dumper sẽ tự động nhận diện và trích xuất game khi khởi chạy.');
+      }
+    }
+
+    function addPreset(pkg) {
+      const el = document.getElementById('targetInput');
+      const val = el.value.trim();
+      const lines = val ? val.split('\n').map(s => s.trim()) : [];
+      if (!lines.includes(pkg)) {
+        lines.push(pkg);
+        el.value = lines.join('\n');
+      }
+    }
+
+    async function saveTargets() {
+      const val = document.getElementById('targetInput').value.trim();
+      if (!val) {
+        alert('Danh sách target không được để trống!');
+        return;
+      }
+
+      printLog('Đang lưu danh sách target...');
+      const escaped = val.replace(/"/g, '\\"');
+      const cmd = `sh -c "mkdir -p /data/media/0/Bo_dump && cat << 'EOF' > /data/media/0/Bo_dump/target.txt\n${val}\nEOF\nchmod 0777 /data/media/0/Bo_dump/target.txt && cp -f /data/media/0/Bo_dump/target.txt /data/adb/modules/zygisk_il2cppdumper/target.txt 2>/dev/null && cp -f /data/media/0/Bo_dump/target.txt /sdcard/Bo_dump/target.txt 2>/dev/null"`;
+      
+      const res = await exec(cmd);
+      if (res.errno === 0) {
+        printLog('[Thành công] Đã lưu danh sách target vào:\n- /sdcard/Bo_dump/target.txt\n- /data/adb/modules/zygisk_il2cppdumper/target.txt\n\nDanh sách:\n' + val);
+      } else {
+        printLog('[Lỗi lưu target]: ' + (res.stderr || res.stdout));
+      }
+    }
+
+    async function checkDumpFiles() {
+      printLog('Đang quét danh sách file tại /sdcard/Bo_dump/ ...');
+      const cmd = 'sh -c "if [ -d /sdcard/Bo_dump ]; then ls -laR /sdcard/Bo_dump; elif [ -d /data/media/0/Bo_dump ]; then ls -laR /data/media/0/Bo_dump; else echo [-] Chưa tìm thấy thư mục dump. Hãy khởi chạy game để bắt đầu dump.; fi"';
+      const res = await exec(cmd);
+      printLog(res.stdout || res.stderr || 'Không có file.');
+    }
+
+    async function viewOffsets() {
+      printLog('Đang nạp dữ liệu offset.txt ...');
+      const cmd = 'sh -c "f=$(find /sdcard/Bo_dump /data/media/0/Bo_dump /sdcard/Download/Bo_dump -name offset.txt 2>/dev/null | head -n 1); if [ -n \\\"$f\\\" ]; then head -n 300 \\\"$f\\\"; else echo [-] Chưa tìm thấy offset.txt. Khởi chạy game trước.; fi"';
+      const res = await exec(cmd);
+      printLog(res.stdout || res.stderr);
+    }
+
+    async function viewNativeExports() {
+      printLog('Đang nạp native_exports.txt (Anogs & ELF)...');
+      const cmd = 'sh -c "f=$(find /sdcard/Bo_dump /data/media/0/Bo_dump /sdcard/Download/Bo_dump -name native_exports.txt 2>/dev/null | head -n 1); if [ -n \\\"$f\\\" ]; then head -n 300 \\\"$f\\\"; else echo [-] Chưa tìm thấy native_exports.txt.; fi"';
+      const res = await exec(cmd);
+      printLog(res.stdout || res.stderr);
+    }
+
+    function filterTerminal() {
+      const q = document.getElementById('filterInput').value.toLowerCase().trim();
+      if (!fullOutputText) return;
+      if (!q) {
+        document.getElementById('output').innerText = fullOutputText;
+        return;
+      }
+      const lines = fullOutputText.split('\n');
+      const filtered = lines.filter(l => l.toLowerCase().includes(q));
+      document.getElementById('output').innerText = filtered.length > 0 
+        ? `[Tìm thấy ${filtered.length} kết quả cho "${q}"]\n\n` + filtered.join('\n')
+        : `[Không tìm thấy kết quả nào khớp với "${q}"]`;
+    }
+
+    async function triggerActionScript() {
+      printLog('Đang thực thi action.sh...');
+      const res = await exec('sh /data/adb/modules/zygisk_il2cppdumper/action.sh');
+      printLog(res.stdout || res.stderr || 'Action script đã chạy.');
+      init();
+    }
+
+    async function cleanDumps() {
+      if (!confirm('Bạn có chắc muốn xóa sạch toàn bộ file dump cũ không? (File target.txt vẫn sẽ được giữ lại)')) return;
+      printLog('Đang xóa dữ liệu dump cũ...');
+      const cmd = 'sh -c "find /data/media/0/Bo_dump /sdcard/Bo_dump -mindepth 1 -maxdepth 2 ! -name target.txt -exec rm -rf {} + 2>/dev/null && echo [Thành công] Đã làm sạch toàn bộ dữ liệu dump cũ."';
+      const res = await exec(cmd);
+      printLog(res.stdout || res.stderr || 'Đã dọn sạch.');
+    }
+
+    init();
+  </script>
+</body>
+</html>

@@ -800,6 +800,12 @@ static int phdr_dump_callback(struct dl_phdr_info *info, size_t size, void *data
     const ElfW(Phdr) *phdr = info->dlpi_phdr;
     ElfW(Half) phnum = info->dlpi_phnum;
 
+    auto resolve_addr = [&](ElfW(Addr) p) -> uintptr_t {
+        if (p == 0) return 0;
+        if (p < load_bias) return static_cast<uintptr_t>(load_bias + p);
+        return static_cast<uintptr_t>(p);
+    };
+
     const ElfW(Dyn) *dyn = nullptr;
     for (ElfW(Half) i = 0; i < phnum; ++i) {
         if (phdr[i].p_type == PT_DYNAMIC) {
@@ -812,19 +818,22 @@ static int phdr_dump_callback(struct dl_phdr_info *info, size_t size, void *data
     const ElfW(Sym) *symtab = nullptr;
     const char *strtab = nullptr;
     size_t nchain = 0;
+    ElfW(Addr) dt_init = 0;
+    ElfW(Addr) dt_init_array = 0;
+    size_t dt_init_arraysz = 0;
 
     for (const ElfW(Dyn) *d = dyn; d->d_tag != DT_NULL; ++d) {
         if (d->d_tag == DT_SYMTAB) {
-            symtab = reinterpret_cast<const ElfW(Sym) *>(load_bias + d->d_un.d_ptr);
+            symtab = reinterpret_cast<const ElfW(Sym) *>(resolve_addr(d->d_un.d_ptr));
         } else if (d->d_tag == DT_STRTAB) {
-            strtab = reinterpret_cast<const char *>(load_bias + d->d_un.d_ptr);
+            strtab = reinterpret_cast<const char *>(resolve_addr(d->d_un.d_ptr));
         } else if (d->d_tag == DT_HASH) {
-            auto hash = reinterpret_cast<const uint32_t *>(load_bias + d->d_un.d_ptr);
+            auto hash = reinterpret_cast<const uint32_t *>(resolve_addr(d->d_un.d_ptr));
             if (hash) {
                 nchain = hash[1];
             }
         } else if (d->d_tag == DT_GNU_HASH) {
-            auto gnu_hash = reinterpret_cast<const uint32_t *>(load_bias + d->d_un.d_ptr);
+            auto gnu_hash = reinterpret_cast<const uint32_t *>(resolve_addr(d->d_un.d_ptr));
             if (gnu_hash) {
                 uint32_t nbuckets = gnu_hash[0];
                 uint32_t symoffset = gnu_hash[1];
@@ -848,10 +857,14 @@ static int phdr_dump_callback(struct dl_phdr_info *info, size_t size, void *data
                     nchain = max_sym + 1;
                 }
             }
+        } else if (d->d_tag == DT_INIT) {
+            dt_init = d->d_un.d_ptr;
+        } else if (d->d_tag == DT_INIT_ARRAY) {
+            dt_init_array = d->d_un.d_ptr;
+        } else if (d->d_tag == DT_INIT_ARRAYSZ) {
+            dt_init_arraysz = d->d_un.d_val;
         }
     }
-
-    if (!symtab || !strtab || nchain == 0) return 0;
 
     *ctx->stream << "\n// ============================================================================\n";
     *ctx->stream << "// Module: " << baseName << " | Base: 0x" << std::hex << load_bias << "\n";
@@ -860,19 +873,84 @@ static int phdr_dump_callback(struct dl_phdr_info *info, size_t size, void *data
 
     bool isAnogs = (strstr(baseName, "anogs") != nullptr);
 
-    for (size_t i = 1; i < nchain; ++i) {
-        const auto &sym = symtab[i];
-        if (sym.st_name != 0 && sym.st_value != 0 && sym.st_shndx != SHN_UNDEF) {
-            const char *symName = strtab + sym.st_name;
-            uint64_t rva = sym.st_value;
-            uint64_t va = load_bias + sym.st_value;
-
-            if (isAnogs) {
-                *ctx->stream << "ANOGS_" << symName << " = 0x" << std::hex << rva << "; // Offset: 0x" << rva << " | VA: 0x" << va << "\n";
-            } else {
-                *ctx->stream << "[" << baseName << "] " << symName << " = 0x" << std::hex << rva << "; // Offset: 0x" << rva << " | VA: 0x" << va << "\n";
-            }
+    if (isAnogs) {
+        if (dt_init != 0) {
+            uintptr_t init_va = resolve_addr(dt_init);
+            uint64_t init_rva = (init_va >= load_bias) ? (init_va - load_bias) : dt_init;
+            *ctx->stream << "ANOGS_DT_INIT = 0x" << std::hex << init_rva << "; // Offset: 0x" << init_rva << " | VA: 0x" << init_va << " (Constructor Entry)\n";
             ctx->count++;
+        }
+        if (dt_init_array != 0 && dt_init_arraysz > 0) {
+            uintptr_t arr_va = resolve_addr(dt_init_array);
+            size_t num_funcs = dt_init_arraysz / sizeof(void *);
+            auto funcs = reinterpret_cast<const uintptr_t *>(arr_va);
+            for (size_t k = 0; k < num_funcs; ++k) {
+                uintptr_t fn = funcs[k];
+                if (fn != 0 && fn != static_cast<uintptr_t>(-1)) {
+                    uint64_t fn_rva = (fn >= load_bias) ? (fn - load_bias) : fn;
+                    *ctx->stream << "ANOGS_INIT_ARRAY_" << std::dec << k << " = 0x" << std::hex << fn_rva
+                                 << "; // Offset: 0x" << fn_rva << " | VA: 0x" << fn << " (Constructor #" << std::dec << k << ")\n";
+                    ctx->count++;
+                }
+            }
+        }
+    }
+
+    if (symtab && strtab && nchain > 0) {
+        for (size_t i = 1; i < nchain; ++i) {
+            const auto &sym = symtab[i];
+            if (sym.st_name != 0 && sym.st_value != 0 && sym.st_shndx != SHN_UNDEF) {
+                const char *symName = strtab + sym.st_name;
+                uint64_t rva = sym.st_value;
+                uint64_t va = load_bias + sym.st_value;
+
+                if (isAnogs) {
+                    *ctx->stream << "ANOGS_" << symName << " = 0x" << std::hex << rva << "; // Offset: 0x" << rva << " | VA: 0x" << va << "\n";
+                } else {
+                    *ctx->stream << "[" << baseName << "] " << symName << " = 0x" << std::hex << rva << "; // Offset: 0x" << rva << " | VA: 0x" << va << "\n";
+                }
+                ctx->count++;
+            }
+        }
+    }
+
+    if (isAnogs) {
+        static const char *kSecKeywords[] = {
+            "ptrace", "tracer", "/proc/", "frida", "xposed", "magisk", "detect",
+            "scan", "root", "emulator", "debug", "inject", "hook", "il2cpp",
+            "dumper", "zygisk", "socket", "connect", "sendto", "process_vm"
+        };
+        *ctx->stream << "\n// --- Security Signatures & Strings in libanogs.so ---\n";
+        for (ElfW(Half) i = 0; i < phnum; ++i) {
+            if (phdr[i].p_type == PT_LOAD && (phdr[i].p_flags & PF_R)) {
+                const char *seg_start = reinterpret_cast<const char *>(load_bias + phdr[i].p_vaddr);
+                size_t seg_memsz = phdr[i].p_memsz;
+                size_t pos = 0;
+                while (pos < seg_memsz) {
+                    while (pos < seg_memsz && (seg_start[pos] < 32 || (unsigned char)seg_start[pos] > 126)) {
+                        pos++;
+                    }
+                    size_t str_start = pos;
+                    while (pos < seg_memsz && (seg_start[pos] >= 32 && (unsigned char)seg_start[pos] <= 126)) {
+                        pos++;
+                    }
+                    size_t str_len = pos - str_start;
+                    if (str_len >= 4 && pos < seg_memsz && seg_start[pos] == '\0') {
+                        std::string foundStr(seg_start + str_start, str_len);
+                        for (const char *kw : kSecKeywords) {
+                            if (strcasestr(foundStr.c_str(), kw) != nullptr) {
+                                uint64_t str_rva = phdr[i].p_vaddr + str_start;
+                                uint64_t str_va = reinterpret_cast<uintptr_t>(seg_start + str_start);
+                                *ctx->stream << "ANOGS_STR_" << kw << " = 0x" << std::hex << str_rva
+                                             << "; // Offset: 0x" << str_rva << " | VA: 0x" << str_va
+                                             << " (\"" << json_escape(foundStr.c_str(), foundStr.length()) << "\")\n";
+                                break;
+                            }
+                        }
+                    }
+                    pos++;
+                }
+            }
         }
     }
     ctx->stream->flush();

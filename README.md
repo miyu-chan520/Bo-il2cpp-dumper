@@ -1,31 +1,42 @@
 # Zygisk-Il2CppDumper (Dynamic Edition)
 
 Automated runtime IL2CPP and Native ELF dumper module for **Magisk (Zygisk)**, **KernelSU (ZygiskNext)**, and **APatch (ZygiskNext)**.
-Extracts metadata structures, C# dummy classes, decrypted string literals, dynamic function RVAs, field offsets, and native ELF symbols directly from memory at runtime.
+Extracts metadata structures, C# dummy classes, decrypted string literals, dynamic function RVAs, field offsets, native ELF exports, constructors (`DT_INIT`/`DT_INIT_ARRAY`), and security signatures directly from memory at runtime. Includes a modern built-in WebUI for KernelSU, APatch, and MMRL.
 
 ---
 
 ## 🌟 Key Features
 
-1. **100% Dynamic Runtime Offset & RVA Extraction**:
+1. **Modern Built-in WebUI (KernelSU / APatch / MMRL)**:
+   - Full-featured cyberpunk dashboard directly in the manager app.
+   - Master Switch with real-time toggle between ENABLED / DISABLED.
+   - Target package editor with instant chip presets (`com.dts.freefireth`, `com.dts.freefiremax`, `*`, etc.).
+   - Integrated file explorer & offset inspector: browse dump folders, view files, and filter offsets live in the UI.
+   - One-tap Action execution and dump cleanup.
+2. **100% Dynamic Runtime Offset & RVA Extraction**:
    - Automatically resolves all class method RVAs (`Class$$Method = 0x<RVA>`) and field offsets (`Class::Field = 0x<Offset>`) in real-time.
    - **Game Update Immune**: No hardcoded addresses. When a game updates to a new version, launching the game automatically extracts the updated offsets.
-2. **Native ELF Exports with Offsets (`native_exports.txt`)**:
+3. **Advanced Native ELF & Anogs Extraction (`native_exports.txt`)**:
    - Parses `DT_HASH` / `DT_GNU_HASH` symbol tables of loaded ELF libraries (`libanogs.so`, `libil2cpp.so`, `libunity.so`, etc.).
-   - Exports all symbols with both relative offsets (RVA) and virtual addresses (VA):
+   - Resolves ELF constructors (`DT_INIT` and `DT_INIT_ARRAY`) with relative offsets (RVA) and virtual addresses (VA).
+   - Scans readable memory segments for security signatures (`ptrace`, `tracer`, `/proc/`, `frida`, `root`, `socket`, `connect`, etc.) and outputs their offsets.
+   - Format:
      ```text
+     ANOGS_DT_INIT = 0x<Offset>; // Offset: 0x<Offset> | VA: 0x<VA> (Constructor Entry)
+     ANOGS_INIT_ARRAY_0 = 0x<Offset>; // Offset: 0x<Offset> | VA: 0x<VA> (Constructor #0)
      ANOGS_<SymbolName> = 0x<Offset>; // Offset: 0x<Offset> | VA: 0x<VA>
+     ANOGS_STR_ptrace = 0x<Offset>; // Offset: 0x<Offset> | VA: 0x<VA> ("...")
      [libunity.so] <SymbolName> = 0x<Offset>; // Offset: 0x<Offset> | VA: 0x<VA>
      ```
-3. **Per-Package Clean Directory Isolation (`/sdcard/Bo_dump/<package>/`)**:
+4. **Per-Package Clean Directory Isolation (`/sdcard/Bo_dump/<package>/`)**:
    - Dumps each game into its own dedicated subfolder to avoid clutter when dumping multiple games.
    - **Auto-wipe on launch**: Every time a target game starts, any previous dump folder for that package is automatically cleaned, ensuring each session produces a 100% fresh dump.
-4. **Action Button Toggle (Magisk / KernelSU / APatch)**:
+5. **Action Button Toggle (Magisk / KernelSU / APatch)**:
    - Includes a built-in root manager Action button (`action.sh`).
    - Tap once: Turn ON dumper.
    - Tap again: Turn OFF dumper.
    - State is cleanly stored inside `/data/adb/modules/zygisk_il2cppdumper/disable`, persisting across reboots without polluting temporary directories or requiring SELinux property overrides.
-5. **Zero OOM / 64KB Buffered Streaming**:
+6. **Zero OOM / 64KB Buffered Streaming**:
    - Flushes output in 64KB I/O chunks (`pubsetbuf`) directly to storage, preventing Out-Of-Memory crashes on massive games.
 
 ---
