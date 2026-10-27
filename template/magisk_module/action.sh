@@ -12,9 +12,13 @@ if [ ! -f /data/media/0/Bo_dump/target.txt ]; then
 # Target packages to dump (one package per line)
 # Enter '*' to dump any Unity game
 com.dts.freefireth
+com.dts.freefiremax
 EOF
     chmod 0777 /data/media/0/Bo_dump/target.txt
 fi
+
+# Sync target.txt to module directory
+cp -f /data/media/0/Bo_dump/target.txt "$MODDIR/target.txt" 2>/dev/null
 
 DISABLE_FILE="$MODDIR/disable"
 
@@ -35,7 +39,7 @@ else
     echo " [Zygisk-Il2CppDumper] Status: DISABLED (OFF)"
     echo "========================================="
     echo " Dumper is now DEACTIVATED."
-    echo " Saved in /data/adb/modules/zygisk_il2cppdumper/disable"
+    echo " Saved in $MODDIR/disable"
     echo " Games will run normally without dumping."
     echo " Tap Action again to turn ON."
     echo "========================================="

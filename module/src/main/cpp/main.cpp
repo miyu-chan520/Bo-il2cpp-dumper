@@ -88,7 +88,7 @@ private:
         int dirfd = api->getModuleDir();
 
         if (!is_dumper_enabled(dirfd)) {
-            LOGI("Zygisk-Il2CppDumper is DISABLED by /data/adb/modules/zygisk_il2cppdumper/disable");
+            LOGI("Zygisk-Il2CppDumper is DISABLED by disable flag in /data/adb");
             api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
             return;
         }
@@ -109,16 +109,17 @@ private:
 
         bool match = false;
 
-        // Default target check
-        if (is_matching(package_name, "com.dts.freefireth")) {
+        // Default: match all Free Fire package variants
+        if (strstr(package_name, "com.dts.freefire") != nullptr) {
             match = true;
         }
 
-        // Try reading target.txt from all accessible locations
+        // Target list reading from accessible locations
         std::vector<std::string> targetPaths = {
             "/data/media/0/Bo_dump/target.txt",
             "/sdcard/Bo_dump/target.txt",
-            "/data/adb/modules/zygisk_il2cppdumper/target.txt"
+            "/data/adb/modules/zygisk_il2cppdumper/target.txt",
+            "/data/local/tmp/target.txt"
         };
 
         FILE *tf = nullptr;
@@ -163,7 +164,7 @@ private:
         }
 
         if (match) {
-            LOGI("Zygisk-Il2CppDumper detected target game: %s", package_name);
+            LOGI("Zygisk-Il2CppDumper target matched: %s", package_name);
             enable_hack = true;
             pkg_name = strdup(package_name);
             game_data_dir = app_data_dir ? strdup(app_data_dir) : strdup("/data/data/unknown");

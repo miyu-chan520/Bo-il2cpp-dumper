@@ -728,13 +728,24 @@ void il2cpp_api_init(void *handle) {
         if (dladdr((void *) il2cpp_domain_get_assemblies, &dlInfo)) {
             il2cpp_base = reinterpret_cast<uint64_t>(dlInfo.dli_fbase);
         }
-        write_log("[+] il2cpp_base: 0x%" PRIx64, il2cpp_base);
-    } else {
-        std::string err = "Failed to initialize il2cpp APIs (missing symbols)";
-        write_log("[-] %s", err.c_str());
-        show_toast(std::string("[Il2CppDumper] FAIL: ") + err);
-        return;
     }
+    if (il2cpp_base == 0) {
+        FILE *maps = fopen("/proc/self/maps", "r");
+        if (maps) {
+            char line[512];
+            while (fgets(line, sizeof(line), maps)) {
+                if (strstr(line, "libil2cpp.so")) {
+                    uintptr_t start = 0;
+                    if (sscanf(line, "%" SCNxPTR "-", &start) == 1) {
+                        il2cpp_base = start;
+                        break;
+                    }
+                }
+            }
+            fclose(maps);
+        }
+    }
+    write_log("[+] il2cpp_base: 0x%" PRIx64, il2cpp_base);
 
     Il2CppDomain *domain = nullptr;
     int retry = 0;
@@ -894,6 +905,35 @@ static void dump_native_exports(const std::string &outPath) {
     write_log("[+] Native export symbols dump completed (%zu symbols exported) to %s", ctx.count, outPath.c_str());
 }
 
+static bool mkdir_p(const std::string &path, mode_t mode = 0777) {
+    if (path.empty()) return false;
+    char subpath[PATH_MAX];
+    strncpy(subpath, path.c_str(), sizeof(subpath) - 1);
+    subpath[sizeof(subpath) - 1] = '\0';
+
+    for (char *p = subpath + 1; *p; ++p) {
+        if (*p == '/') {
+            *p = '\0';
+            if (access(subpath, F_OK) != 0) {
+                mkdir(subpath, mode);
+            }
+            *p = '/';
+        }
+    }
+    if (access(subpath, F_OK) != 0) {
+        return mkdir(subpath, mode) == 0;
+    }
+    return true;
+}
+
+static void copy_file(const std::string &src, const std::string &dst) {
+    std::ifstream in(src, std::ios::binary);
+    if (!in.is_open()) return;
+    std::ofstream out(dst, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) return;
+    out << in.rdbuf();
+}
+
 void il2cpp_dump(const char *pkg_name, const char *game_data_dir) {
     std::string pkg = (pkg_name && strlen(pkg_name) > 0) ? pkg_name : "com.dts.freefireth";
     write_log("[+] Starting automated IL2CPP dump for %s...", pkg.c_str());
@@ -906,23 +946,28 @@ void il2cpp_dump(const char *pkg_name, const char *game_data_dir) {
         return;
     }
 
-    auto domain = il2cpp_domain_get();
-    if (!domain) {
-        std::string err = "il2cpp domain is null, cannot dump";
-        write_log("[-] %s", err.c_str());
-        show_toast(std::string("[Il2CppDumper] FAIL: ") + err);
-        return;
-    }
-
-    if (il2cpp_thread_attach) {
-        s_attached_thread = il2cpp_thread_attach(domain);
-        write_log("[+] Native thread attached to IL2CPP domain: %p", s_attached_thread);
-    }
-
+    Il2CppDomain *domain = nullptr;
+    const Il2CppAssembly **assemblies = nullptr;
     size_t size = 0;
-    auto assemblies = il2cpp_domain_get_assemblies(domain, &size);
-    if (!assemblies || size == 0) {
-        std::string err = "No assemblies found in domain";
+
+    for (int retry = 0; retry < 60; ++retry) {
+        domain = il2cpp_domain_get();
+        if (domain) {
+            if (il2cpp_thread_attach && !s_attached_thread) {
+                s_attached_thread = il2cpp_thread_attach(domain);
+                write_log("[+] Thread attached to IL2CPP domain: %p", s_attached_thread);
+            }
+            assemblies = il2cpp_domain_get_assemblies(domain, &size);
+            if (assemblies && size > 0) {
+                write_log("[+] IL2CPP domain ready (%zu assemblies loaded)", size);
+                break;
+            }
+        }
+        sleep(2);
+    }
+
+    if (!domain || !assemblies || size == 0) {
+        std::string err = "Timed out waiting for il2cpp domain & assemblies (120s)";
         write_log("[-] %s", err.c_str());
         show_toast(std::string("[Il2CppDumper] FAIL: ") + err);
         return;
@@ -932,22 +977,19 @@ void il2cpp_dump(const char *pkg_name, const char *game_data_dir) {
     std::vector<std::string> candidateDirs = {
         "/sdcard/Bo_dump/" + pkg,
         "/data/media/0/Bo_dump/" + pkg,
+        "/sdcard/Download/Bo_dump/" + pkg,
         "/sdcard/Android/data/" + pkg + "/files/Bo_dump",
         std::string(game_data_dir ? game_data_dir : "/data/data/" + pkg) + "/files/Bo_dump"
     };
 
     std::string boDir = "";
     for (const auto &cand : candidateDirs) {
-        size_t lastSlash = cand.rfind('/');
-        if (lastSlash != std::string::npos) {
-            std::string parent = cand.substr(0, lastSlash);
-            mkdir(parent.c_str(), 0777);
-        }
-        mkdir(cand.c_str(), 0777);
+        mkdir_p(cand, 0777);
 
         std::string testFile = cand + "/.test_write";
         FILE *tf = fopen(testFile.c_str(), "w");
         if (tf) {
+            fputs("ok", tf);
             fclose(tf);
             unlink(testFile.c_str());
             boDir = cand;
@@ -1075,6 +1117,22 @@ void il2cpp_dump(const char *pkg_name, const char *game_data_dir) {
 
     // Generate native export symbols (including libanogs.so, libil2cpp.so, libunity.so)
     dump_native_exports(nativeExpPath);
+
+    // Mirror copy to public sdcard/Download if candidate fallback was used
+    std::vector<std::string> mirrorTargets = {
+        "/sdcard/Bo_dump/" + pkg,
+        "/sdcard/Download/Bo_dump/" + pkg
+    };
+    for (const auto &mirror : mirrorTargets) {
+        if (mirror != boDir && mkdir_p(mirror, 0777)) {
+            copy_file(outPath, mirror + "/dump.cs");
+            copy_file(scriptPath, mirror + "/script.json");
+            copy_file(strLiteralPath, mirror + "/stringliteral.json");
+            copy_file(offsetPath, mirror + "/offset.txt");
+            copy_file(nativeExpPath, mirror + "/native_exports.txt");
+            write_log("[+] Mirror copy created at %s", mirror.c_str());
+        }
+    }
 
     write_log("[+] ALL DUMP OPERATIONS COMPLETED SUCCESSFULLY FOR %s AT %s!", pkg.c_str(), boDir.c_str());
     show_toast(std::string("[Il2CppDumper] SUCCESS! Saved to ") + boDir);

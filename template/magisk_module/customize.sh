@@ -1,4 +1,4 @@
-#!/sbin/sh
+#!/system/bin/sh
 
 # Set execute permissions
 set_perm $MODPATH/action.sh 0 0 0755
@@ -15,6 +15,7 @@ if [ ! -f /data/media/0/Bo_dump/target.txt ]; then
 # Target packages to dump (one package per line)
 # Enter '*' to dump any Unity game
 com.dts.freefireth
+com.dts.freefiremax
 EOF
     chmod 0777 /data/media/0/Bo_dump/target.txt
 fi
@@ -22,8 +23,12 @@ fi
 # Copy target.txt to module directory as backup
 cp -f /data/media/0/Bo_dump/target.txt $MODPATH/target.txt 2>/dev/null
 
-ui_print "- Zygisk-Il2CppDumper installed successfully"
-ui_print "- Action button: Toggle ON/OFF"
-ui_print "- Default target: com.dts.freefireth"
+ui_print "**********************************************"
+ui_print " Zygisk-Il2CppDumper v3.1.0"
+ui_print "**********************************************"
+ui_print "- Action button: Configured and enabled"
+ui_print "- Storage directory: /sdcard/Bo_dump/ (0777)"
 ui_print "- Config file: /sdcard/Bo_dump/target.txt"
+ui_print "- Default targets: com.dts.freefireth, com.dts.freefiremax"
 ui_print "- Output folder: /sdcard/Bo_dump/<package>/"
+ui_print "**********************************************"
